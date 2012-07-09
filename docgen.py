@@ -25,16 +25,47 @@ class PandocType(object):
         args = ", ".join(repr(arg) for arg in self.args)
         return "{0}({1})".format(typename, args)
 
-def typecheck(item, type_):
-    # handle str, [types], (type1, type2, ...), that's about it.
-    pass
+def typechecker(types_str):
+    types = [eval(_type) for _type in types_str.split()]
+    def typecheck(args):
+        if len(args) != len(types):
+            error = "invalid number of arguments against types pattern {0}"
+            raise TypeError(error.format(types_str))
+        for arg, _type in zip(args, type):
+            typecheck(arg, _type)
+    return typechecks
 
+def typecheck(item, pattern):
+    """
+    Typechecks items against a single type pattern.
+
+    The type pattern should be one of:
+
+      - a primitive or user-defined Python type,
+      - a `[type]` pattern 
+      - a `(type1, type2, ...)` pattern.
+    """
+    if isinstance(pattern, list):
+        if not isinstance(item, list):
+            raise TypeError() # TODO: error message
+        for _item in item:
+            typecheck(_item, pattern[0])
+    elif isinstance(pattern, tuple):
+        if not isinstance(item, tuple) or len(pattern) != len(item):
+            raise TypeError() # TODO: error message
+        for i, _item in enumerate(item):
+            typecheck(_item, pattern[i])
+    else:
+        if not isinstance(item, pattern):
+            error = "{0!r} is not of type {1}."
+            raise TypeError(error.format(item, pattern.__name__))
 
 def make_type(declaration): # such as "Block = BulletList [[Block]]"
-    parent, signature = [item.strip for item in declaration.split("=")]
-    items = signature.split()
-    typename = items[0]
-    
+    parent, constructor = [item.strip() for item in declaration.split("=")]
+    items = constructor.split()
+    typename = items[0], items[1:]
+    _type = type(typename, (parent, ), {})
+    # TODO: install the type checker ...
 
 class Pandoc(PandocType):
     def __init__(self, *args):
@@ -144,6 +175,10 @@ def main(module_name):
         latex_doc += rst_to_md(doc)
 
     return latex_doc
+
+def test():
+    import doctest
+    doctest.testmod()
 
 if __name__ == "__main__":
     test_object_repr()
