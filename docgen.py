@@ -15,15 +15,8 @@ import sys
 # Third-Party Libraries
 import pbs
 
-class PandocType(object):
-    def __init__(self, *args):
-        self.args = objectify(list(args))
-    def __iter__(self):
-        return iter(args)
-    def __repr__(self):
-        typename = type(self).__name__
-        args = ", ".join(repr(arg) for arg in self.args)
-        return "{0}({1})".format(typename, args)
+#-------------------------------------------------------------------------------
+# Sandbox: automatic generation of (typecked) classes.
 
 def typechecker(types_str):
     types = [eval(_type) for _type in types_str.split()]
@@ -61,15 +54,39 @@ def typecheck(item, pattern):
             raise TypeError(error.format(item, pattern.__name__))
 
 def make_type(declaration): # such as "Block = BulletList [[Block]]"
+    # or "Block = DefinitionList [([Inline], [[Block]])]"	
+
     parent, constructor = [item.strip() for item in declaration.split("=")]
     items = constructor.split()
     typename = items[0], items[1:]
     _type = type(typename, (parent, ), {})
     # TODO: install the type checker ...
 
+#-------------------------------------------------------------------------------
+def tree_iter(item):
+    yield item
+    if not isinstance(item, basestring):
+        try:
+            it = iter(item)
+            for subitem in it:
+                for subsubitem in tree_iter(subitem):
+                    yield subsubitem
+        except TypeError:
+            pass
+
+class PandocType(object):
+    def __init__(self, *args):
+        self.args = args
+    def __iter__(self):
+        return iter(self.args)
+    tree_iter = tree_iter
+    def __repr__(self):
+        typename = type(self).__name__
+        args = ", ".join(repr(arg) for arg in self.args)
+        return "{0}({1})".format(typename, args)
+
 class Pandoc(PandocType):
     def __init__(self, *args):
-        print "***", args
         meta = args[0]
         blocks = objectify(args[1])
         self.args = [meta, blocks]
@@ -86,62 +103,99 @@ class BulletList(Block):
 class Plain(Block):
     pass
 
+class RawBlock(Block):
+    pass
+
 class Inline(PandocType):
     pass
 
 class Para(Inline):
     pass
 
+class Link(Inline):
+    pass
+
 class Str(Inline):
+    def __init__(self, *args):
+        self.args = [u"".join(args)]
+    def __repr__(self):
+        text = self.args[0]
+        return "{0}({1!r})".format("Str", text)
+
+# Rk: `Space` is encoded as a string in exported json. 
+# That's kind of a problem because we won't typematch it like the other
+# instances and searching for the string "Space" may lead to false positive.
+# The only way to deal with it is to be aware of the context where the Space
+# atom (inline) may appear but here we typically are not aware of that.
+
+class Strong(Inline):
     pass
 
-# don't ? use the string as an atom ?
-class Space(Inline):
+class Math(Inline):
     pass
 
-def objectify(*items, **kwargs):
-    objects = []
+def objectify(item, **kwargs):
     if kwargs.get("toplevel"):
-        assert len(items) == 1
-        doc = items[0]
+        doc = item
         return Pandoc(*doc)
-    for item in items:
-        if isinstance(item, list):
-            items = item
-            objects.append([objectify(item) for item in items])
-        elif isinstance(item, (basestring, int)):
-            return item
-        else:
-            key, value = item.items()[0]
-            pandoc_type = eval(key)
-            return pandoc_type(*value) 
-    return objects
 
-src = """
+    if isinstance(item, list):
+        items = item
+        return [objectify(item) for item in items]
+    elif isinstance(item, (basestring, int)):
+        return item
+    else: # dict with a single entry.
+        assert isinstance(item, dict) and len(item) == 1
+        key, args = item.items()[0]
+        pandoc_type = eval(key)
+        return pandoc_type(*objectify(args)) 
+
+src = r"""
 UUUUu
 ------
 
-Jdshjsdhshdjs
+Jdshjsdhshdjs **bold** neh.
 
-  - lskdsl
-  - djskdjs kdj sk
-  - dlskdlskdlskdlsk
-    kdslkdlsdksdksl
-    ldksldksld
+  - kdsldks,
+  - djskdjskdjskdjs,
+  - dkk.
+
+Let's try some LaTeX: $a=1$.
+
+  $$
+  \int_0^2 f(x) \, dx
+  $$
+
+  \begin{equation}
+  a = 2
+  \end{equation}
+
+Get some [links](http://www.dude.com "wooz") --. Can I get more ?
 
 """
 
 def test_object_repr():
     doc = json.loads(str(pbs.pandoc(read="markdown", write="json", _in=src)))
     print doc
-    print objectify(doc, toplevel=True)
+    o = objectify(doc, toplevel=True)
+    print o
+    print 79 *  "-"
+    for item in tree_iter(o):
+        print item
     
 #-------------------------------------------------------------------------------
 
-def get_docs(module_name):
-    module = importlib.import_module(module_name)
-    docs = {}
-    docs[module_name] = (module, pydoc.getdoc(module))
+def get_docs(module):
+    """
+    Get a module docstrings as a qualified name to (item, docstring) mapping.
+    """
+    if isinstance(module, basestring):
+        module_name = module
+        module = importlib.import_module(module)
+    else:
+        module_name = module.__name__
+
+    docs = {module_name: (module, pydoc.getdoc(module))}
     for name, item in module.__dict__.items():
         try:
             if item.__module__ == module_name:
@@ -153,9 +207,6 @@ def get_docs(module_name):
 # TODO: generate a hierarchy of classes from the Pandoc document model.
 #       each class implements `__iter__` (and what else ? etree-like model ?).
 
-def iter(doc):
-    # source: http://hackage.haskell.org/packages/archive/pandoc-types/1.9.1/doc/html/Text-Pandoc-Definition.html
-    pass
 
 def rst_to_md(text, **filters):
      doc = json.loads(str(pbs.pandoc(read="rst", write="json", _in=text)))
