@@ -216,27 +216,68 @@ def test_object_repr():
 #       stuff into an info dict ?
 
 # TODO: normalize the docstrings wrt blank lines and spaces an initial 'tabs' ?
-#       is pydoc already doing that ?
+#       is pydoc already doing that ? Yes, via inspect it is (in inspect.getdoc).
 
-def get_docs(item, docs=None, context=None):
-    "Get the docs !"
-    docs = {item.__name__: {"item": item, "docstring": inspect.getdoc(item)}}
-    item_name = item.__name__
-    if context:
-        item_name = context + "." + item_name
-    is_module = type(item) == types.ModuleType
-    for _name, _item in item.__dict__.items():
-        try:
-            if not _name.startswith("_") and \
-               not is_module or _item.__module__ == item_name:
-                docs[item_name + "." + _name] = \
-                  {"item": _item, "docstring": inspect.getdoc(_item)}
-        except (AttributeError, TypeError):
-            pass
-    def line(pair):
-       info = pair[1]
-       return inspect.getsourcelines(info["item"])[1]
-    return sorted(docs.items(), key=line)
+# TODO: when found an external module, register somewhere (for the dependency
+#       analysis ...)
+def object_tree(item, name=None, _cache=None):
+    if _cache is None:
+        _cache = ([], [])
+    if name is None:
+        if hasattr(item, "__module__"):
+            name = item.__module__ + "." + item.__name__
+        else:
+            name = item.__name__
+    tree = (name, item, [])
+    if item not in _cache[0]:
+        _cache[0].append(item)
+        _cache[1].append(tree[2])
+    if isinstance(item, types.ModuleType):
+        children = inspect.getmembers(item)
+    elif isinstance(item, type):
+        children = item.__dict__.items() 
+    else:
+        children = []
+
+    MethodWrapper = type((lambda: None).__call__)
+
+    for _name, _item in children:
+        # exclude private and foreign objects as well as (sub)modules.
+        # exclude __call__ for anything but classes (nah, detect wrapper instead)
+        # some extra magic stuff should be excluded too (__class__, __base__, etc.)
+
+        # OH, C'MON, even strings are a nested problem ! "a.__doc__.__doc__", etc ...
+
+        if (not _name.startswith("_") or (_name.startswith("__") and _name.endswith("__"))) and \
+           not isinstance(_item, types.ModuleType) and \
+           getattr(_item, "__module__", name) == name and \
+           not isinstance(_item, MethodWrapper):
+           # import time; time.sleep(1.0)
+           _name = name + "." + _name
+           # print "*", _name, "|||",  _item, "|||", type(_item), "|||", isinstance(_item, types.ModuleType)
+           if _item in _cache[0]:
+               index = _cache[0].index(_item)
+               new = (_name, _item, _cache[1][index])
+           else:
+               new = object_tree(_item, _name, _cache)
+           tree[2].append(new)
+    return tree
+
+def line(item):
+    try:
+        inspect.getsourcelines(item)[1]
+    except TypeError:
+        return None
+
+def docstrings(tree):
+    children = tree[2]
+    children = sorted(children, key=lambda info: line(info[1]))
+    _docstrings = [docstrings(child) for child in children]
+
+    # TODO: inspect.getdoc should be disabled for primitive types or *instances*
+    #       of classes.
+
+    return (tree[0], inspect.getdoc(tree[1]), _docstrings)
 
 # TODO: make rst input optional ? Or get rid of it for markdown ?
 
