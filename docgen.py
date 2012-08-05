@@ -215,20 +215,30 @@ def test_object_repr():
 #       add extra stuff such as line / file, source code, etc. ? Put this
 #       stuff into an info dict ?
 
+_hidden_magic = ["__{0}__".format(name) for name in "module dict weakref doc builtins".split()]
+
 # TODO: normalize the docstrings wrt blank lines and spaces an initial 'tabs' ?
 #       is pydoc already doing that ? Yes, via inspect it is (in inspect.getdoc).
 
 # TODO: when found an external module, register somewhere (for the dependency
 #       analysis ...)
-def object_tree(item, name=None, _cache=None):
-    if _cache is None:
-        _cache = ([], [])
+def object_tree(item, name=None, module=None, _cache=None):
+    """
+    Return the tree of items contained in item.
+
+    The return value is a 3-uple (name, item, children).
+    """
     if name is None:
         if hasattr(item, "__module__"):
             name = item.__module__ + "." + item.__name__
         else:
             name = item.__name__
+    if module is None and isinstance(item, types.ModuleType):
+        module = item
+
     tree = (name, item, [])
+    if _cache is None:
+        _cache = ([], [])
     if item not in _cache[0]:
         _cache[0].append(item)
         _cache[1].append(tree[2])
@@ -241,6 +251,12 @@ def object_tree(item, name=None, _cache=None):
 
     MethodWrapper = type((lambda: None).__call__)
 
+    def is_local(item, name):
+        if module:
+            return getattr(_item, "__module__", module.__name__) == module.__name__
+        else:
+            return True
+
     for _name, _item in children:
         # exclude private and foreign objects as well as (sub)modules.
         # exclude __call__ for anything but classes (nah, detect wrapper instead)
@@ -248,9 +264,9 @@ def object_tree(item, name=None, _cache=None):
 
         # OH, C'MON, even strings are a nested problem ! "a.__doc__.__doc__", etc ...
 
-        if (not _name.startswith("_") or (_name.startswith("__") and _name.endswith("__"))) and \
+        if (not _name.startswith("_") or (_name.startswith("__") and _name.endswith("__") and not _name in _hidden_magic)) and \
            not isinstance(_item, types.ModuleType) and \
-           getattr(_item, "__module__", name) == name and \
+           is_local(item, name) and \
            not isinstance(_item, MethodWrapper):
            # import time; time.sleep(1.0)
            _name = name + "." + _name
@@ -259,37 +275,34 @@ def object_tree(item, name=None, _cache=None):
                index = _cache[0].index(_item)
                new = (_name, _item, _cache[1][index])
            else:
-               new = object_tree(_item, _name, _cache)
+               new = object_tree(_item, _name, module, _cache)
            tree[2].append(new)
     return tree
 
-def line(item):
-    try:
-        inspect.getsourcelines(item)[1]
-    except TypeError:
-        return None
 
-def docstrings(tree):
+
+def doc_tree(tree):
+    """
+    Return a hierarchical structure with the docstrings of an object tree.
+
+    (name, item, children) -> (name, docstring, children).
+
+    The results are sorted according to the first line of the object def.
+    """
     children = tree[2]
     children = sorted(children, key=lambda info: line(info[1]))
-    _docstrings = [docstrings(child) for child in children]
-
-    # TODO: inspect.getdoc should be disabled for primitive types or *instances*
-    #       of classes.
-
-    return (tree[0], inspect.getdoc(tree[1]), _docstrings)
+    _doc_trees = [doc_tree(child) for child in children]
+    return (tree[0], inspect.getdoc(tree[1]) or "", _doc_trees)
 
 # TODO: make rst input optional ? Or get rid of it for markdown ?
 
 # TODO: implement a filter that will decrease the header level of rst stuff
 #       by two.
 
-def patch_header(doc):
+def change_header_level(doc, transform):
     for elt in tree_iter(doc):
-        #print type(elt)
         if isinstance(elt, Header):
-            #print elt
-            elt.args[0] = elt.args[0] + 2
+            elt.args[0] = transform(elt.args[0])
     return doc
 
 def rst_to_md(text, *filters):
@@ -311,35 +324,57 @@ def tt(x):
 # TODO: Test support with cython ? That is, see what can be done WITHOUT the
 #       inspect "getsource*" functions.
 
-def def_(x):
-    return inspect.getsource(x).splitlines()[0].strip()
+def def_(name, item):
+    try:
+        return inspect.getsource(item).splitlines()[0].strip()
+    except TypeError:
+        return name + " (def. not available.)"
 
 # TODO: check doctest management (sucks).
 
+def format(item, name=None, level=1):
+    name, item, children = object_tree(item, name)
+    def line_number(info):
+        try:
+            return inspect.getsourcelines(info[1])[1]
+        except TypeError:
+            return -1
+    children = sorted(children, key=line_number)
+
+    markdown = "" 
+
+    docstring = inspect.getdoc(item) or ""
+    if isinstance(item, types.ModuleType):
+        lines = docstring.splitlines()
+        if lines:
+            short = lines[0]
+            long  = "".join(lines[1:]).strip()
+        else:
+            short = ""
+            long  = ""
+        markdown = level * "#" + " " + tt(name) + " -- " + short + "\n\n"
+        markdown += long + "\n\n"
+    elif isinstance(item, (type, types.FunctionType, types.ModuleType)):
+        markdown += level * "#" + " "+ tt(def_(name, item)) + "\n\n" # use fct signature info.
+        markdown += docstring + "\n\n"
+    else: # "primitive" types
+        markdown += "`{0} = {1!r}`\n".format(name, item)
+        
+    for name, item, _ in children:
+        markdown += format(item, name, level=level+1) + "\n"
+    return markdown
+
 def main(module_name):
     module = importlib.import_module(module_name)
-    docs = get_docs(module).items()
-    docs.sort(key = lambda item: item[1][2])
-    markdown = ""
-    name, (module, docstring, _) = docs[0]
+    return format(module)
 
-    docstring = docstring.strip()
-    short = docstring.splitlines()[0]
-    long = "".join(docstring.splitlines()[1:]).strip()
-    markdown = "# " + tt(name) + " -- " + short + "\n\n"
-    markdown += rst_to_md(long)
-    del docs[0]
-    for name, (item, docstring, _) in docs:
-        markdown += "\n## " + tt(def_(item)) + "\n\n" # use fct signature info.
-        markdown += rst_to_md(docstring, patch_header)
-    return markdown
+
 
 def test():
     import doctest
     doctest.testmod()
 
 if __name__ == "__main__":
-    #test_object_repr()
     module_name = sys.argv[1]
     print main(module_name)
 
