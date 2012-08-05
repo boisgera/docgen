@@ -11,6 +11,7 @@ import importlib
 import inspect
 import json
 import pydoc
+import re
 import sys
 import types
 
@@ -172,6 +173,12 @@ def jsonify(object):
     else:
         return object
 
+def change_header_level(doc, transform):
+    for elt in tree_iter(doc):
+        if isinstance(elt, Header):
+            elt.args[0] = transform(elt.args[0])
+    return doc
+
 src = r"""
 UUUUu
 ------
@@ -215,13 +222,16 @@ def test_object_repr():
 #       add extra stuff such as line / file, source code, etc. ? Put this
 #       stuff into an info dict ?
 
-_hidden_magic = ["__{0}__".format(name) for name in "module dict weakref doc builtins".split()]
+_hidden_magic = ["__{0}__".format(name) for name in "module dict weakref doc builtins file name package".split()]
 
 # TODO: normalize the docstrings wrt blank lines and spaces an initial 'tabs' ?
 #       is pydoc already doing that ? Yes, via inspect it is (in inspect.getdoc).
 
 # TODO: when found an external module, register somewhere (for the dependency
 #       analysis ...)
+# TODO: need to find the star-imports and for every object that has no
+#       __module__, check that's there no such name in the star-imported
+#       modules.
 def object_tree(item, name=None, module=None, _cache=None):
     """
     Return the tree of items contained in item.
@@ -299,11 +309,7 @@ def doc_tree(tree):
 # TODO: implement a filter that will decrease the header level of rst stuff
 #       by two.
 
-def change_header_level(doc, transform):
-    for elt in tree_iter(doc):
-        if isinstance(elt, Header):
-            elt.args[0] = transform(elt.args[0])
-    return doc
+
 
 def rst_to_md(text, *filters):
      doc = json.loads(str(pbs.pandoc(read="rst", write="json", _in=text)))
@@ -332,17 +338,61 @@ def def_(name, item):
 
 # TODO: check doctest management (sucks).
 
-def format(item, name=None, level=1):
-    name, item, children = object_tree(item, name)
+def line_number_finder(container):
+    INF = 1e300000
     def line_number(info):
+        qname, item, children = info
+        name = qname.split(".")[-1]
         try:
-            return inspect.getsourcelines(info[1])[1]
+            _line_number = inspect.getsourcelines(item)[1]
         except TypeError:
-            return -1
-    children = sorted(children, key=line_number)
+            try:
+                source = inspect.getsource(container)
+                pattern = r"\s*{0}\s*=".format(name)
+                _line_number = 1
+                for line in source.splitlines():
+                    if re.match(pattern, line):
+                        return _line_number
+                    else:
+                       _line_number += 1
+                else:
+                    _line_number = INF
+            except TypeError:
+                _line_number = INF
+        return _line_number
+    return line_number
+
+def signature(function, name=None):
+    argspec = inspect.getargspec(function)
+    name = name or function.__name__
+    nargs = len(argspec.args)
+    args = ""
+    defaults = argspec.defaults or []
+    for i, arg in enumerate(argspec.args):
+        try:
+            default = defaults[i - nargs]
+            args += "{0}={1!r}, ".format(arg, default)
+        except IndexError:
+            args += "{0}, ".format(arg)
+    if argspec.varargs:
+        args += "*{0}, ".format(argspec.varargs)
+    if argspec.keywords:
+        args += "**{0}, ".format(argspec.keywords) 
+    if args:
+        args = args[:-2]
+    return name + "({0})".format(args)
+     
+
+
+def format(item, name=None, level=1, module=None):
+    if module is None and isinstance(item, types.ModuleType):
+        module = item
+    name, item, children = object_tree(item, name)
+    last_name = name.split(".")[-1]
+
+    children = sorted(children, key=line_number_finder(item))
 
     markdown = "" 
-
     docstring = inspect.getdoc(item) or ""
     if isinstance(item, types.ModuleType):
         lines = docstring.splitlines()
@@ -354,14 +404,26 @@ def format(item, name=None, level=1):
             long  = ""
         markdown = level * "#" + " " + tt(name) + " -- " + short + "\n\n"
         markdown += long + "\n\n"
-    elif isinstance(item, (type, types.FunctionType, types.ModuleType)):
-        markdown += level * "#" + " "+ tt(def_(name, item)) + "\n\n" # use fct signature info.
+    elif isinstance(item, (types.FunctionType, types.MethodType)):
+        markdown += level * "#" + " " + tt(last_name) + " [`function`]" + "\n\n" # use fct signature info.
+        markdown += tt(signature(item))+ "\n\n"   
+        markdown += docstring + "\n\n"
+    elif isinstance(item, type):
+        markdown += level * "#" + " " + tt(last_name) 
+        if item.__bases__ == (object,):
+            markdown += " [`type`]"
+        else:
+            markdown += " [`type`, inherits {0}]".format(" ".join(tt(cls.__name__) for cls in item.__bases__)) 
+        markdown += "\n\n"
         markdown += docstring + "\n\n"
     else: # "primitive" types
-        markdown += "`{0} = {1!r}`\n".format(name, item)
+        # distinguish "constants" (with syntax __stuff__ or STUFF) from
+        # variables ? Dunno ...
+        markdown += level * "#" + " " + tt(last_name) + " [`{0}`]".format(type(item).__name__) + "\n\n"
+        markdown += tt(repr(item)) + "\n\n"
         
     for name, item, _ in children:
-        markdown += format(item, name, level=level+1) + "\n"
+        markdown += format(item, name=name, level=level+1) + "\n"
     return markdown
 
 def main(module_name):
