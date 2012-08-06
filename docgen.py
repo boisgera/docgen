@@ -29,9 +29,29 @@ import types
 # Third-Party Libraries
 import pbs
 
-#-------------------------------------------------------------------------------
+#
+# TODO
+# ==============================================================================
+# 
+#   -  deal with comments in the source code (and not only docstrings) ?
+#      Could be useful to structure the doc, add hrules, extra sections, etc.
+#      Is is unambiguous ? Yeah, sort of. Once a section has been added, 
+#      every thing else.
+#      But still, some of the comments are applicable to what follows, such
+#      as imports, some aren't and are sectioning mecanisms, some are just
+#      notes dropped in the middle ... Better not unable this until I am
+#      convinced it's worth it. The main thing I lack is extra annotation
+#      that would allow to STRUCTURE the list of documented objects. So
+#      far they are ORDERED, but that's all.
+#      Use a special notation (as in Javadoc) to denote a comment that should
+#      be exported ? Such as the doubling of the first hash sign ? Or use
+#      '#>' instead ? Anyway, only the top-level comments should have this
+#      treatment. Or simply one extra line "#       " before and one after ?
+#      Yeah, I like this lightweight convention.
+#
+
 # Pandoc Document Model
-#-------------------------------------------------------------------------------
+# ==============================================================================
 def _tree_iter(item):
     "Tree iterator"
     yield item
@@ -122,7 +142,7 @@ class Str(Inline):
     def __json__(self):
         return {"Str": self.args[0]}
 
-# Rk: `Space` is encoded as a string in exported json. 
+# **Remark:** `Space` is encoded as a string in exported json. 
 # That's kind of a problem because we won't typematch it like the other
 # instances and searching for the string "Space" may lead to false positive.
 # The only way to deal with it is to be aware of the context where the Space
@@ -177,10 +197,8 @@ def write(doc):
 Pandoc.write = write
 Pandoc.read = staticmethod(read)
 
-#-------------------------------------------------------------------------------
 # Pandoc Transforms
-#-------------------------------------------------------------------------------
-
+# ==============================================================================
 def apply(transform):
     def doc_transform(doc_item):
         for elt in doc_item.iter():
@@ -207,16 +225,18 @@ def set_min_header_level(doc, minimum=1):
             delta = minimum - min_
             increase_header_level(doc, delta)
 
-# TODO: insert HorizontalRule before every level 2 section. Unless I do that
-#       at the LaTeX level ? Or don't do it generally, just before functions
-#       and classes (no transform, do it directly during markdown generation) ?
+# TODO 
+#   : insert HorizontalRule before every level 2 section. Unless I do that
+#     at the LaTeX level ? Or don't do it generally, just before functions
+#     and classes (no transform, do it directly during markdown generation) ?
 
-#-------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
-# TODO: hierarchical structure: class method docs should be browsed too.
-#       return a list that contains [name, item, docstring, children] ?
-#       add extra stuff such as line / file, source code, etc. ? Put this
-#       stuff into an info dict ?
+# TODO
+#   : hierarchical structure: class method docs should be browsed too.
+#     return a list that contains [name, item, docstring, children] ?
+#     add extra stuff such as line / file, source code, etc. ? Put this
+#     stuff into an info dict ?
 
 _targets = "module dict weakref doc builtins file name package"
 _hidden_magic = ["__{0}__".format(name) for name in _targets.split()]
@@ -246,11 +266,13 @@ def is_external(item, name, star_imports):
     else:
         return False
 
-# TODO: when found an external module, register somewhere (for the dependency
-#       analysis ...)
-# TODO: need to find the star-imports and for every object that has no
-#       __module__, check that's there no such name in the star-imported
-#       modules.
+# TODO
+#   : when found an external module, register somewhere (for the dependency
+#     analysis ...)
+# TODO
+#   : need to find the star-imports and for every object that has no
+#     `__module__`, check that's there no such name in the star-imported
+#     modules.
 def object_tree(item, name=None, module=None, _cache=None):
     """
     Return the tree of items contained in `item`.
@@ -377,10 +399,11 @@ def signature(function, name=None):
         args = args[:-2]
     return name + "({0})".format(args)
 
-# TODO: reimplement getdoc with a variant on the stripping so that if tabs
-#       /spaces are removed, the FIRST line shift (after BLANKLINE stripping) 
-#       is also taken into account.
-#       That convention would ease the formatting of doctests ...
+# TODO
+#   : reimplement getdoc with a variant on the stripping so that if tabs
+#     or spaces are removed, the FIRST line shift (after BLANKLINE stripping) 
+#     is also taken into account.
+#     That convention would ease the formatting of doctests ...
 
 def format(item, name=None, level=1, module=None):
     if module is None and isinstance(item, types.ModuleType):
