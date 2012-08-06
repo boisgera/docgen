@@ -237,6 +237,8 @@ def get_star_imports(module):
 
 def is_external(item, name, star_imports):
     last_name = name.split(".")[-1]
+    if last_name.startswith("_") and not (last_name.startswith("__") and last_name.endswith("__")):
+        return False
     for module_name in star_imports:
         module = importlib.import_module(module_name)
         if hasattr(module, last_name) and getattr(module, last_name) is item:
@@ -374,6 +376,11 @@ def signature(function, name=None):
     if args:
         args = args[:-2]
     return name + "({0})".format(args)
+
+# TODO: reimplement getdoc with a variant on the stripping so that if tabs
+#       /spaces are removed, the FIRST line shift (after BLANKLINE stripping) 
+#       is also taken into account.
+#       That convention would ease the formatting of doctests ...
 
 def format(item, name=None, level=1, module=None):
     if module is None and isinstance(item, types.ModuleType):
