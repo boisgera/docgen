@@ -82,18 +82,18 @@ class PandocType(object):
         self.args = list(args)
     def __iter__(self):
         return iter(self.args)
-    tree_iter = tree_iter
+    iter = tree_iter
     def __repr__(self):
         typename = type(self).__name__
         args = ", ".join(repr(arg) for arg in self.args)
         return "{0}({1})".format(typename, args)
     def __json__(self):
-        return {type(self).__name__: jsonify(list(self.args))}
+        return {type(self).__name__: to_json(list(self.args))}
 
 class Pandoc(PandocType):
     def __json__(self):
         meta, blocks = self.args[0], self.args[1]
-        return [meta, [jsonify(block) for block in blocks]]
+        return [meta, [to_json(block) for block in blocks]]
 
 class Block(PandocType):
     pass
@@ -149,72 +149,80 @@ class Strong(Inline):
 class Math(Inline):
     pass
 
-def objectify(item, **kwargs):
-    if kwargs.get("toplevel"):
-        doc = item
-        return Pandoc(*doc)
-
-    if isinstance(item, list):
-        items = item
-        return [objectify(item) for item in items]
-    elif isinstance(item, dict) and len(item) == 1:
-        key, args = item.items()[0]
+def to_pandoc(json):
+    def is_doc(item):
+        return isinstance(item, list) and \
+               len(item) == 2 and \
+               isinstance(item[0], dict) and \
+               "docTitle" in item[0].keys()
+    if is_doc(json):
+        return Pandoc(*[to_pandoc(item) for item in json])
+    elif isinstance(json, list):
+        return [to_pandoc(item) for item in json]
+    elif isinstance(json, dict) and len(json) == 1:
+        key, args = json.items()[0]
         pandoc_type = eval(key)
-        return pandoc_type(*objectify(args))
+        return pandoc_type(*to_pandoc(args))
     else:
-        return item
+        return json
+    
+def to_json(doc_item):
+    if hasattr(doc_item, "__json__"):
+        return doc_item.__json__()
+    elif isinstance(doc_item, list):
+        return [to_json(item) for item in doc_item]
+    else:
+        return doc_item
+
+def read(text):
+    """
+    Read a markdown text as a Pandoc instance.
+    """
+    json_text = str(pbs.pandoc(read="markdown", write="json", _in=text))
+    json_ = json.loads(json_text)
+    return to_pandoc(json_)
+
+def write(doc):
+    """
+    Write a Pandoc instance as a markdown text.
+    """
+    json_text = json.dumps(to_json(doc))
+    return str(pbs.pandoc(read="json", write="markdown", _in=json_text))
+
+Pandoc.write = write
+Pandoc.read = staticmethod(read)
+
+#-------------------------------------------------------------------------------
+# Pandoc Transforms
+#-------------------------------------------------------------------------------
+
+def apply(transform):
+    def doc_transform(doc_item):
+        for elt in doc_item.iter():
+            transform(elt)
+    return doc_transform
+
+PandocType.apply = lambda doc_item, transform: apply(transform)(doc_item)
     
 
-def jsonify(object):
-    if hasattr(object, "__json__"):
-        return object.__json__()
-    elif isinstance(object, list):
-        return [jsonify(item) for item in object]
+def increase_header_level(doc, delta=1):
+    def _increase_header_level(delta):
+        def _increase(doc_item):
+            if isinstance(doc_item, Header):
+                doc_item.args[0] = doc_item.args[0] + delta
+        return _increase
+    return doc.apply(_increase_header_level(delta))
+
+def set_min_header_level(doc, minimum=1):
+    levels = [item.args[0] for item in doc.iter() if isinstance(item, Header)]
+    if not levels:
+        return
     else:
-        return object
+        min_ = min(levels)
+        if minimum > min_:
+            delta = minimum - min_
+            increase_header_level(doc, delta)
 
-def change_header_level(doc, transform):
-    for elt in tree_iter(doc):
-        if isinstance(elt, Header):
-            elt.args[0] = transform(elt.args[0])
-    return doc
-
-src = r"""
-UUUUu
-------
-
-Jdshjsdhshdjs **bold** neh.
-
-  - kdsldks,
-  - djskdjskdjskdjs,
-  - dkk.
-
-Let's try some LaTeX: $a=1$.
-
-  $$
-  \int_0^2 f(x) \, dx
-  $$
-
-  \begin{equation}
-  a = 2
-  \end{equation}
-
-Get some [links](http://www.dude.com "wooz") --. Can I get more ?
-
-"""
-
-def test_object_repr():
-    doc = json.loads(str(pbs.pandoc(read="markdown", write="json", _in=src)))
-    print doc
-    o = objectify(doc, toplevel=True)
-    print o
-    r = jsonify(o)
-    print r
-    print r == doc
-#    print 79 *  "-"
-#    for item in tree_iter(o):
-#        print item
-    
 #-------------------------------------------------------------------------------
 
 # TODO: hierarchical structure: class method docs should be browsed too.
@@ -222,7 +230,8 @@ def test_object_repr():
 #       add extra stuff such as line / file, source code, etc. ? Put this
 #       stuff into an info dict ?
 
-_hidden_magic = ["__{0}__".format(name) for name in "module dict weakref doc builtins file name package".split()]
+_targets = "module dict weakref doc builtins file name package"
+_hidden_magic = ["__{0}__".format(name) for name in _targets.split()]
 
 # TODO: normalize the docstrings wrt blank lines and spaces an initial 'tabs' ?
 #       is pydoc already doing that ? Yes, via inspect it is (in inspect.getdoc).
@@ -381,8 +390,6 @@ def signature(function, name=None):
     if args:
         args = args[:-2]
     return name + "({0})".format(args)
-     
-
 
 def format(item, name=None, level=1, module=None):
     if module is None and isinstance(item, types.ModuleType):
@@ -405,15 +412,14 @@ def format(item, name=None, level=1, module=None):
         markdown = level * "#" + " " + tt(name) + " -- " + short + "\n\n"
         markdown += long + "\n\n"
     elif isinstance(item, (types.FunctionType, types.MethodType)):
-        markdown += level * "#" + " " + tt(last_name) + " [`function`]" + "\n\n" # use fct signature info.
-        markdown += tt(signature(item))+ "\n\n"   
+        markdown += level * "#" + " " + tt(signature(item))+ " [`function`]".format(signature(item))
+        markdown += "\n\n"
+        doc = Pandoc.read(docstring)
+        set_min_header_level(doc, level + 1)
+        docstring = doc.write()
         markdown += docstring + "\n\n"
     elif isinstance(item, type):
-        markdown += level * "#" + " " + tt(last_name) 
-        if item.__bases__ == (object,):
-            markdown += " [`type`]"
-        else:
-            markdown += " [`type`, inherits {0}]".format(" ".join(tt(cls.__name__) for cls in item.__bases__)) 
+        markdown += level * "#" + " " + tt((last_name + "({0})").format(", ".join(t.__name__ for t in item.__bases__))) + " [`type`]"
         markdown += "\n\n"
         markdown += docstring + "\n\n"
     else: # "primitive" types
