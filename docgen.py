@@ -1,9 +1,20 @@
 #!/usr/bin/env python
 
 """
-Generate LaTeX documentation from docstrings following Numpy/Scipy conventions.
+Python documentation with Markdown
 
-Source: https://github.com/numpy/numpy/blob/master/doc/HOWTO_DOCUMENT.rst.txt
+Given a Python module whose docstrings use the [Markdown syntax][markdown], 
+print the full Markdown documentation with:
+
+    $ docgen [MODULE-NAME]
+
+This script depends on the Python 2.7 standard library as well as the
+subprocess wrapper [`pbs`][pbs] and the [`pandoc`][pandoc] universal
+document converter.
+
+[markdown]: http://daringfireball.net/projects/markdown/syntax/
+[pbs]: https://github.com/amoffat/pbs/
+[pandoc]: http://johnmacfarlane.net/pandoc/
 """
 
 # Python 2.7 Standard Library
@@ -19,76 +30,44 @@ import types
 import pbs
 
 #-------------------------------------------------------------------------------
-# Sandbox: automatic generation of (typecked) classes.
-
-#def typechecker(types_str):
-#    types = [eval(_type) for _type in types_str.split()]
-#    def typecheck(args):
-#        if len(args) != len(types):
-#            error = "invalid number of arguments against types pattern {0}"
-#            raise TypeError(error.format(types_str))
-#        for arg, _type in zip(args, type):
-#            typecheck(arg, _type)
-#    return typechecks
-
-#def typecheck(item, pattern):
-#    """
-#    Typechecks items against a single type pattern.
-
-#    The type pattern should be one of:
-
-#      - a primitive or user-defined Python type,
-#      - a `[type]` pattern 
-#      - a `(type1, type2, ...)` pattern.
-#    """
-#    if isinstance(pattern, list):
-#        if not isinstance(item, list):
-#            raise TypeError() # TODO: error message
-#        for _item in item:
-#            typecheck(_item, pattern[0])
-#    elif isinstance(pattern, tuple):
-#        if not isinstance(item, tuple) or len(pattern) != len(item):
-#            raise TypeError() # TODO: error message
-#        for i, _item in enumerate(item):
-#            typecheck(_item, pattern[i])
-#    else:
-#        if not isinstance(item, pattern):
-#            error = "{0!r} is not of type {1}."
-#            raise TypeError(error.format(item, pattern.__name__))
-
-#def make_type(declaration): # such as "Block = BulletList [[Block]]"
-#    # or "Block = DefinitionList [([Inline], [[Block]])]"	
-
-#    parent, constructor = [item.strip() for item in declaration.split("=")]
-#    items = constructor.split()
-#    typename = items[0], items[1:]
-#    _type = type(typename, (parent, ), {})
-#    # TODO: install the type checker ...
-
+# Pandoc Document Model
 #-------------------------------------------------------------------------------
-def tree_iter(item):
+def _tree_iter(item):
+    "Tree iterator"
     yield item
     if not isinstance(item, basestring):
         try:
             it = iter(item)
             for subitem in it:
-                for subsubitem in tree_iter(subitem):
+                for subsubitem in _tree_iter(subitem):
                     yield subsubitem
         except TypeError:
             pass
 
 class PandocType(object):
+    """
+    Pandoc types base class
+
+    Refer to the [Pandoc data structure definition](http://hackage.haskell.org/packages/archive/pandoc-types/1.8/doc/html/Text-Pandoc-Definition.html) (in Haskell) for details.
+    """
     def __init__(self, *args):
         self.args = list(args)
     def __iter__(self):
+        "Child iterator"
         return iter(self.args)
-    iter = tree_iter
+    def iter(self):
+        "Tree iterator"
+        return _tree_iter(self)
+    def __json__(self):
+        """
+        Convert `self` into a Python object that may be encoded into text
+        by `json.dumps`.
+        """
+        return {type(self).__name__: to_json(list(self.args))}
     def __repr__(self):
         typename = type(self).__name__
         args = ", ".join(repr(arg) for arg in self.args)
         return "{0}({1})".format(typename, args)
-    def __json__(self):
-        return {type(self).__name__: to_json(list(self.args))}
 
 class Pandoc(PandocType):
     def __json__(self):
@@ -110,6 +89,9 @@ class BulletList(Block):
 class Plain(Block):
     pass
 
+class CodeBlock(Block):
+    pass
+
 class BlockQuote(Block):
     pass
 
@@ -117,6 +99,9 @@ class RawBlock(Block):
     pass
 
 class Inline(PandocType):
+    pass
+
+class Emph(Inline):
     pass
 
 class Para(Inline):
@@ -203,7 +188,6 @@ def apply(transform):
     return doc_transform
 
 PandocType.apply = lambda doc_item, transform: apply(transform)(doc_item)
-    
 
 def increase_header_level(doc, delta=1):
     def _increase_header_level(delta):
@@ -223,6 +207,10 @@ def set_min_header_level(doc, minimum=1):
             delta = minimum - min_
             increase_header_level(doc, delta)
 
+# TODO: insert HorizontalRule before every level 2 section. Unless I do that
+#       at the LaTeX level ? Or don't do it generally, just before functions
+#       and classes (no transform, do it directly during markdown generation) ?
+
 #-------------------------------------------------------------------------------
 
 # TODO: hierarchical structure: class method docs should be browsed too.
@@ -233,8 +221,28 @@ def set_min_header_level(doc, minimum=1):
 _targets = "module dict weakref doc builtins file name package"
 _hidden_magic = ["__{0}__".format(name) for name in _targets.split()]
 
-# TODO: normalize the docstrings wrt blank lines and spaces an initial 'tabs' ?
-#       is pydoc already doing that ? Yes, via inspect it is (in inspect.getdoc).
+def get_star_imports(module):
+    try:
+        source = inspect.getsource(module)
+    except TypeError:
+        source = ""
+    pattern = r"\s*from\s*(\S*)\s*import\s*\*"
+    lines = source.splitlines()
+    modules = []
+    for line in lines:
+        match = re.match(pattern, line)
+        if match:
+            modules.append(match.groups()[0])
+    return modules
+
+def is_external(item, name, star_imports):
+    last_name = name.split(".")[-1]
+    for module_name in star_imports:
+        module = importlib.import_module(module_name)
+        if hasattr(module, last_name) and getattr(module, last_name) is item:
+            return True
+    else:
+        return False
 
 # TODO: when found an external module, register somewhere (for the dependency
 #       analysis ...)
@@ -243,9 +251,10 @@ _hidden_magic = ["__{0}__".format(name) for name in _targets.split()]
 #       modules.
 def object_tree(item, name=None, module=None, _cache=None):
     """
-    Return the tree of items contained in item.
+    Return the tree of items contained in `item`.
 
-    The return value is a 3-uple (name, item, children).
+    The return value is a `(name, item, children)` where `children`
+    has the same structure.
     """
     if name is None:
         if hasattr(item, "__module__"):
@@ -258,7 +267,7 @@ def object_tree(item, name=None, module=None, _cache=None):
     tree = (name, item, [])
     if _cache is None:
         _cache = ([], [])
-    if item not in _cache[0]:
+    if id(item) not in [id(x) for x in _cache[0]]:
         _cache[0].append(item)
         _cache[1].append(tree[2])
     if isinstance(item, types.ModuleType):
@@ -276,6 +285,8 @@ def object_tree(item, name=None, module=None, _cache=None):
         else:
             return True
 
+    star_imports = get_star_imports(module)
+
     for _name, _item in children:
         # exclude private and foreign objects as well as (sub)modules.
         # exclude __call__ for anything but classes (nah, detect wrapper instead)
@@ -286,66 +297,28 @@ def object_tree(item, name=None, module=None, _cache=None):
         if (not _name.startswith("_") or (_name.startswith("__") and _name.endswith("__") and not _name in _hidden_magic)) and \
            not isinstance(_item, types.ModuleType) and \
            is_local(item, name) and \
+           not is_external(_item, _name, star_imports) and \
            not isinstance(_item, MethodWrapper):
            # import time; time.sleep(1.0)
            _name = name + "." + _name
            # print "*", _name, "|||",  _item, "|||", type(_item), "|||", isinstance(_item, types.ModuleType)
-           if _item in _cache[0]:
-               index = _cache[0].index(_item)
+
+           # BUG: Numpy issue: when an array is "=="'d to SOME items (such as 
+           #      a numeric value, a boolean, etc.), the result is an array.
+           
+           if id(_item) in [id(x) for x in _cache[0]]:
+               index = [id(x) for x in _cache[0]].index(id(_item))
                new = (_name, _item, _cache[1][index])
            else:
                new = object_tree(_item, _name, module, _cache)
            tree[2].append(new)
     return tree
 
-
-
-def doc_tree(tree):
+def tt(text):
     """
-    Return a hierarchical structure with the docstrings of an object tree.
-
-    (name, item, children) -> (name, docstring, children).
-
-    The results are sorted according to the first line of the object def.
+    Turn `text` into fixed-font text (or *teletype*).
     """
-    children = tree[2]
-    children = sorted(children, key=lambda info: line(info[1]))
-    _doc_trees = [doc_tree(child) for child in children]
-    return (tree[0], inspect.getdoc(tree[1]) or "", _doc_trees)
-
-# TODO: make rst input optional ? Or get rid of it for markdown ?
-
-# TODO: implement a filter that will decrease the header level of rst stuff
-#       by two.
-
-
-
-def rst_to_md(text, *filters):
-     doc = json.loads(str(pbs.pandoc(read="rst", write="json", _in=text)))
-     doc = objectify(doc)
-     for filter in filters:
-         doc = filter(doc)
-     doc = jsonify(doc)
-     #print "***", doc
-     return str(pbs.pandoc(read="json", write="markdown", _in=json.dumps(doc)))
-
-def tt(x):
-    return "`{0}`".format(x)
-
-# TODO: improve def_: use the real name (multiple decl), for classes use
-#       the constructor signature; get rid of the ":", use [class] or [function]
-#       instead of the class or def keyword ? 
-
-# TODO: Test support with cython ? That is, see what can be done WITHOUT the
-#       inspect "getsource*" functions.
-
-def def_(name, item):
-    try:
-        return inspect.getsource(item).splitlines()[0].strip()
-    except TypeError:
-        return name + " (def. not available.)"
-
-# TODO: check doctest management (sucks).
+    return "`{0}`".format(text)
 
 def line_number_finder(container):
     INF = 1e300000
@@ -354,7 +327,7 @@ def line_number_finder(container):
         name = qname.split(".")[-1]
         try:
             _line_number = inspect.getsourcelines(item)[1]
-        except TypeError:
+        except (IOError, TypeError):
             try:
                 source = inspect.getsource(container)
                 pattern = r"\s*{0}\s*=".format(name)
@@ -366,14 +339,25 @@ def line_number_finder(container):
                        _line_number += 1
                 else:
                     _line_number = INF
-            except TypeError:
+            except (IOError, TypeError):
                 _line_number = INF
         return _line_number
     return line_number
 
 def signature(function, name=None):
+    """
+    Return the function signature as found in Python source:
+
+        >>> def f(x, y=1, *args, **kwargs):
+        ...     pass
+        >>> print signature(f)
+        f(x, y=1, *args, **kwargs)
+        >>> print signature(f, name="g")
+        g(x, y=1, *args, **kwargs)
+    """
     argspec = inspect.getargspec(function)
-    name = name or function.__name__
+    if name is None: 
+        name = function.__name__
     nargs = len(argspec.args)
     args = ""
     defaults = argspec.defaults or []
@@ -405,10 +389,14 @@ def format(item, name=None, level=1, module=None):
         lines = docstring.splitlines()
         if lines:
             short = lines[0]
-            long  = "".join(lines[1:]).strip()
+            long  = "\n".join(lines[1:]).strip()
         else:
             short = ""
             long  = ""
+
+        # TODO: make the distinction in short between titles (to be merged
+        # in the title, that does not end with a "." and a short description,
+        # that should not be merged (and ends with a ".").
         markdown = level * "#" + " " + tt(name) + " -- " + short + "\n\n"
         markdown += long + "\n\n"
     elif isinstance(item, (types.FunctionType, types.MethodType)):
@@ -417,7 +405,7 @@ def format(item, name=None, level=1, module=None):
         doc = Pandoc.read(docstring)
         set_min_header_level(doc, level + 1)
         docstring = doc.write()
-        markdown += docstring + "\n\n"
+        markdown += docstring + "\n"
     elif isinstance(item, type):
         markdown += level * "#" + " " + tt((last_name + "({0})").format(", ".join(t.__name__ for t in item.__bases__))) + " [`type`]"
         markdown += "\n\n"
@@ -437,8 +425,8 @@ def main(module_name):
     return format(module)
 
 
-
 def test():
+    # erf, does not work ???
     import doctest
     doctest.testmod()
 
