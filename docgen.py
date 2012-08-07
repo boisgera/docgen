@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-
+# encoding: utf-8
 """
 Python documentation with Markdown
 
@@ -29,6 +29,11 @@ import types
 # Third-Party Libraries
 import pbs
 
+# Local Libraries
+
+__author__ = u"Sébastien Boisgérault <Sebastien.Boisgerault@mines-paristech.fr>"
+
+
 #
 # TODO
 # ==============================================================================
@@ -50,8 +55,10 @@ import pbs
 #      Yeah, I like this lightweight convention.
 #
 
+#
 # Pandoc Document Model
 # ==============================================================================
+#
 def _tree_iter(item):
     "Tree iterator"
     yield item
@@ -197,8 +204,10 @@ def write(doc):
 Pandoc.write = write
 Pandoc.read = staticmethod(read)
 
+#
 # Pandoc Transforms
 # ==============================================================================
+#
 def apply(transform):
     def doc_transform(doc_item):
         for elt in doc_item.iter():
@@ -225,19 +234,24 @@ def set_min_header_level(doc, minimum=1):
             delta = minimum - min_
             increase_header_level(doc, delta)
 
+#
 # TODO 
 #   : insert HorizontalRule before every level 2 section. Unless I do that
 #     at the LaTeX level ? Or don't do it generally, just before functions
 #     and classes (no transform, do it directly during markdown generation) ?
+#
 
+#
 # ------------------------------------------------------------------------------
+#
 
+#
 # TODO
 #   : hierarchical structure: class method docs should be browsed too.
 #     return a list that contains [name, item, docstring, children] ?
 #     add extra stuff such as line / file, source code, etc. ? Put this
 #     stuff into an info dict ?
-
+#
 _targets = "module dict weakref doc builtins file name package"
 _hidden_magic = ["__{0}__".format(name) for name in _targets.split()]
 
@@ -418,7 +432,7 @@ def format(item, name=None, level=1, module=None):
     if isinstance(item, types.ModuleType):
         lines = docstring.splitlines()
         if lines:
-            short = lines[0]
+            short = lines[0] # TODO: what if there is no short desc. ?
             long  = "\n".join(lines[1:]).strip()
         else:
             short = ""
@@ -444,7 +458,11 @@ def format(item, name=None, level=1, module=None):
         # distinguish "constants" (with syntax __stuff__ or STUFF) from
         # variables ? Dunno ...
         markdown += level * "#" + " " + tt(last_name) + " [`{0}`]".format(type(item).__name__) + "\n\n"
-        markdown += tt(repr(item)) + "\n\n"
+        if isinstance(item, unicode):
+            string = unicode.encode("utf-8")
+        else:
+            string = str(item)
+        markdown += tt(string) + "\n\n"
         
     for name, item, _ in children:
         markdown += format(item, name=name, level=level+1) + "\n"
