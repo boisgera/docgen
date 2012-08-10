@@ -36,28 +36,15 @@ __author__ = u"Sébastien Boisgérault <Sebastien.Boisgerault@mines-paristech.fr
 
 #
 # TODO
-# ==============================================================================
+# ------------------------------------------------------------------------------
 # 
-#   -  deal with comments in the source code (and not only docstrings) ?
-#      Could be useful to structure the doc, add hrules, extra sections, etc.
-#      Is is unambiguous ? Yeah, sort of. Once a section has been added, 
-#      every thing else.
-#      But still, some of the comments are applicable to what follows, such
-#      as imports, some aren't and are sectioning mecanisms, some are just
-#      notes dropped in the middle ... Better not unable this until I am
-#      convinced it's worth it. The main thing I lack is extra annotation
-#      that would allow to STRUCTURE the list of documented objects. So
-#      far they are ORDERED, but that's all.
-#      Use a special notation (as in Javadoc) to denote a comment that should
-#      be exported ? Such as the doubling of the first hash sign ? Or use
-#      '#>' instead ? Anyway, only the top-level comments should have this
-#      treatment. Or simply one extra line "#       " before and one after ?
-#      Yeah, I like this lightweight convention.
+#   -  analyze the last header level (if any) in the last comment(s) before an
+#      object and shift the section levels accordingly.
 #
 
 #
 # Pandoc Document Model
-# ==============================================================================
+# ------------------------------------------------------------------------------
 #
 def _tree_iter(item):
     "Tree iterator"
@@ -149,11 +136,13 @@ class Str(Inline):
     def __json__(self):
         return {"Str": self.args[0]}
 
+#
 # **Remark:** `Space` is encoded as a string in exported json. 
 # That's kind of a problem because we won't typematch it like the other
 # instances and searching for the string "Space" may lead to false positive.
 # The only way to deal with it is to be aware of the context where the Space
 # atom (inline) may appear but here we typically are not aware of that.
+#
 
 class Strong(Inline):
     pass
@@ -206,7 +195,7 @@ Pandoc.read = staticmethod(read)
 
 #
 # Pandoc Transforms
-# ==============================================================================
+# ------------------------------------------------------------------------------
 #
 def apply(transform):
     def doc_transform(doc_item):
@@ -358,8 +347,9 @@ def tt(text):
     """
     return "`{0}`".format(text)
 
+INF = 1e300000
+
 def line_number_finder(container):
-    INF = 1e300000
     def line_number(info):
         qname, item, children = info
         name = qname.split(".")[-1]
@@ -413,21 +403,54 @@ def signature(function, name=None):
         args = args[:-2]
     return name + "({0})".format(args)
 
-# TODO
-#   : reimplement getdoc with a variant on the stripping so that if tabs
-#     or spaces are removed, the FIRST line shift (after BLANKLINE stripping) 
-#     is also taken into account.
-#     That convention would ease the formatting of doctests ...
+def get_comments(module):
+    comments = []
+    try:
+        source = inspect.getsource(module)
+    except IOError:
+        return comment
+    pattern = "^#\s*\n(# [^\n]*\n)*#\s*\n"
+    for match in re.finditer(pattern, source, re.MULTILINE):
+        line_number = source.count("\n", 0, match.start()) + 1
+        comment = match.group(0)
+        comment = "\n".join(line[2:] for line in comment.splitlines())
+        comments.append((line_number, comment))
+    return comments
+       
+def last_header_level(markdown):
+    doc = Pandoc.read(markdown)
+    levels = [item.args[0] for item in doc.iter() if isinstance(item, Header)]
+    if levels:
+        return levels[-1]
 
-def format(item, name=None, level=1, module=None):
+def format_comments(comments, up_to=INF):
+    markdown = ""
+    level = None
+    while True:
+        try:
+            line_number, comment = comments.pop(0)
+            if line_number > up_to:
+                comments.insert(0, (line_number, comment))
+                break
+            else:
+                markdown += comment
+        except IndexError:
+            break
+    return markdown, last_header_level(markdown)
+        
+
+def format(item, name=None, level=1, module=None, comments=None):
     if module is None and isinstance(item, types.ModuleType):
         module = item
+    if comments is None:
+        comments = get_comments(module)
     name, item, children = object_tree(item, name)
     last_name = name.split(".")[-1]
 
+    markdown = ""
     children = sorted(children, key=line_number_finder(item))
 
-    markdown = "" 
+
     docstring = inspect.getdoc(item) or ""
     if isinstance(item, types.ModuleType):
         lines = docstring.splitlines()
@@ -459,13 +482,19 @@ def format(item, name=None, level=1, module=None):
         # variables ? Dunno ...
         markdown += level * "#" + " " + tt(last_name) + " [`{0}`]".format(type(item).__name__) + "\n\n"
         if isinstance(item, unicode):
-            string = unicode.encode("utf-8")
+            string = item.encode("utf-8")
         else:
             string = str(item)
         markdown += tt(string) + "\n\n"
         
-    for name, item, _ in children:
-        markdown += format(item, name=name, level=level+1) + "\n"
+
+    for name, item, _children in children:
+        line_number = line_number_finder(module)((name, item, _children))
+        text, last_level = format_comments(comments, up_to=line_number)
+        markdown += text
+        if last_level:
+            level = last_level
+        markdown += format(item, name, level+1, module, comments) + "\n"
     return markdown
 
 def main(module_name):
