@@ -18,6 +18,7 @@ document converter.
 """
 
 # Python 2.7 Standard Library
+import copy
 import importlib
 import inspect
 import json
@@ -38,8 +39,9 @@ __author__ = u"Sébastien Boisgérault <Sebastien.Boisgerault@mines-paristech.fr
 # TODO
 # ------------------------------------------------------------------------------
 # 
-#   -  analyze the last header level (if any) in the last comment(s) before an
-#      object and shift the section levels accordingly.
+#   -  Allow the source file to be given as an option, to be used instead
+#      of an introspection that may be broken.
+#      Yes, I think of Cython, absolutely.
 #
 
 #
@@ -72,6 +74,8 @@ class PandocType(object):
     def iter(self):
         "Tree iterator"
         return _tree_iter(self)
+    def apply(self, transform): 
+        apply(transform)(self)
     def __json__(self):
         """
         Convert `self` into a Python object that may be encoded into text
@@ -87,6 +91,12 @@ class Pandoc(PandocType):
     def __json__(self):
         meta, blocks = self.args[0], self.args[1]
         return [meta, [to_json(block) for block in blocks]]
+    @staticmethod 
+    def read(text):
+        return read(text)
+    def write(self):
+        return write(self)
+
 
 class Block(PandocType):
     pass
@@ -190,9 +200,6 @@ def write(doc):
     json_text = json.dumps(to_json(doc))
     return str(pbs.pandoc(read="json", write="markdown", _in=json_text))
 
-Pandoc.write = write
-Pandoc.read = staticmethod(read)
-
 #
 # Pandoc Transforms
 # ------------------------------------------------------------------------------
@@ -203,7 +210,6 @@ def apply(transform):
             transform(elt)
     return doc_transform
 
-PandocType.apply = lambda doc_item, transform: apply(transform)(doc_item)
 
 def increase_header_level(doc, delta=1):
     def _increase_header_level(delta):
@@ -423,6 +429,119 @@ def last_header_level(markdown):
     if levels:
         return levels[-1]
 
+#
+# Source Declaration Analysis
+# ------------------------------------------------------------------------------
+#
+
+# TODO: take source as an argument, create a list of "objects" with names
+#       and other info such as type, plus some type-specific info and
+#       chidren. Add some sources / lineno info into the mix so that the
+#       original source can be reconstructed easily.
+#       How to deal with indentation and blanklines ? Factor indentation 
+#       when we can ? How do we deal with line continuations ?
+
+# TODO: start with the generation of a stream of (types, with data) events
+#       that all have a lineno, THEN create the appropriate structure ? Use
+#       a state when doing so that to begin with, has a stack of all indents ?
+#       Have a INDENT, DEINDENT (?). START_DECL, END_DECL, START/END-COMMENT,
+#       same for docstrings, etc. etc.
+
+def is_blank(line):
+    whitespace = "\s*"
+    return re.match(whitespace, line).group(0) == line
+
+def multilines(text):
+    # find first what the next character is ? Either # or ' or "", then
+    # proceed accordingly ?
+
+    comment = re.compile(r"\s*(?:.*)\n?")
+    simple = re.compile(r"(?:'''(?:[^']|\\'|'{1,2}(?!'))*'''|'(?:[^']|\\')*')")
+    double = re.compile(r'(?:"""(?:[^"]|\\"|"{1,2}(?!"))*"""|"(?:[^"]|\\")*")')
+    # TODO: incorporate optional 'u' / 'r' prefixes.
+    offset = 0
+    while True:
+        try:
+            char = text[offset]
+        except IndexError:
+            break
+        if char == "#":
+            print "--- # ---"
+            match = comment.search(text, offset)
+            content = text[match.start():match.end()]
+            print content
+            offset = match.end()
+        elif char == "'":
+            print "--- ' ---"
+            match = simple.search(text, offset)
+            content = text[match.start():match.end()]
+            print content
+            offset = match.end()
+        elif char == "\"":
+            print "--- \" ---"
+            match = double.search(text, offset)
+            content = text[match.start():match.end()]
+            print content
+            offset = match.end()
+        else:
+            offset += 1
+
+
+    line_cont = r"\\\n(.*)"  
+
+# TODO: integrate line continuations.
+# TODO: integration comments
+# TODO: integration docstrings (AhhAHAHhHhH !!!)
+def tree(source, indent=None):
+    if isinstance(source, basestring):
+        source = source.splitlines()
+    if indent is None:
+        indent = []
+    root = []
+    def indents(line):
+        if is_blank(line):
+            return 0
+        if not line.startswith(indent):
+            return -1
+        if line.startswith(indent) and line[len(indent):].startswith(" "):
+            return +1
+        else:
+            return 0
+    while source:
+        line = source.pop(0)
+        d = delta(line)
+        print d, line
+        if d == 0:
+            root.append(line)
+        elif d < 0:
+            return root
+        else:
+            _indent = re.match("\s*", line).group(0)
+            sub = [line, tree(source, indent=_indent)]
+            root.append(sub)
+    return root
+    
+
+def get_decl(line):
+    """
+    Return `(name, type)`
+    """
+    function = r"(?:c?p?def)\s+(?P<name>[_0-9a-zA-Z]+)\("
+    type = r"(class)\s+(?P<name>[_0-9a-zA-Z]+)("
+    assign = r"(?P<name>[_0-9a-zA-Z]+)\s*\+?="
+
+#
+# ------------------------------------------------------------------------------
+#
+
+# BUG: any item with `inf` as a line_number (meaning unknown line number,
+#      flush to the end will flush out ALL of the source comments, including
+#      those out of the class declaration for example. 
+#      If we could reduce the unknown decl line numbers to 0 that would be 
+#      extra nice ... Do our best and otherwise EXCLUDE the objects whose
+#      line number is unknown ?
+#      Base the improvement on source analysis (with re), something that could
+#      be working on cython too ?
 def format_comments(comments, up_to=INF):
     markdown = ""
     level = None
@@ -490,7 +609,14 @@ def format(item, name=None, level=1, module=None, comments=None):
 
     for name, item, _children in children:
         line_number = line_number_finder(module)((name, item, _children))
+        _comments = copy.copy(comments)
         text, last_level = format_comments(comments, up_to=line_number)
+#        print ">>> " + name + " " + 60 * ">"
+#        print line_number
+#        print _comments
+#        print text
+#        print 79 * "<"
+      
         markdown += text
         if last_level:
             level = last_level
