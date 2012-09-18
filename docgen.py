@@ -451,47 +451,63 @@ def is_blank(line):
     whitespace = "\s*"
     return re.match(whitespace, line).group(0) == line
 
-def multilines(text):
-    # find first what the next character is ? Either # or ' or "", then
-    # proceed accordingly ?
+class Locator(object):
+    def __init__(self, text):
+        self._offsets = [0]
+        for line in text.split("\n"):
+            self._offsets.append(self._offsets[-1] + len(line) + 1)
 
-    comment = re.compile(r"\s*(?:.*)\n?")
-    simple = re.compile(r"(?:'''(?:[^']|\\'|'{1,2}(?!'))*'''|'(?:[^']|\\')*')")
-    double = re.compile(r'(?:"""(?:[^"]|\\"|"{1,2}(?!"))*"""|"(?:[^"]|\\")*")')
-    # TODO: incorporate optional 'u' / 'r' prefixes.
-    offset = 0
-    while True:
-        try:
-            char = text[offset]
-        except IndexError:
-            break
-        if char == "#":
-            print "--- # ---"
-            match = comment.search(text, offset)
-            content = text[match.start():match.end()]
-            print content
-            offset = match.end()
-        elif char == "'":
-            print "--- ' ---"
-            match = simple.search(text, offset)
-            content = text[match.start():match.end()]
-            print content
-            offset = match.end()
-        elif char == "\"":
-            print "--- \" ---"
-            match = double.search(text, offset)
-            content = text[match.start():match.end()]
-            print content
-            offset = match.end()
+    def lineno(self, offset):
+        "Return lineno - 1 and the relative offset"
+        for i, _offset in enumerate(self._offsets):
+            if offset < _offset:
+                return (i - 1, offset - self._offsets[i-1])
+
+    def offset(self, lineno, offset):
+         return ([len for len in self._offsets[:lineno]] + [offset], 0)
+
+def finder(pattern, *flags):
+    pattern = re.compile(pattern, *flags)
+    def find(text, start=0):
+        match = pattern.search(text, start)
+        if match is None:
+            return None
         else:
-            offset += 1
+            return match.span(1)
+    return find
 
+def scan(text):
+    finders = [("comment"  , finder(r"(#.*)\n?", re.MULTILINE)),
+               ("string"   , finder(r'((?:"""(?:[^"]|\\"|"{1,2}(?!"))*"""|"(?:[^"]|\\")*"))')),
+               ("string"   , finder(r"((?:'''(?:[^']|\\'|'{1,2}(?!'))*'''|'(?:[^']|\\')*'))")),
+               ("linecont" , finder(r"(\\\n)")),
+               ("blankline", finder(r"(^[ \t\r\f\v]*\n)", re.MULTILINE))]
 
-    line_cont = r"\\\n(.*)"  
+    # TODO: parenthesis-based line continuations
 
-# TODO: integrate line continuations.
-# TODO: integration comments
-# TODO: integration docstrings (AhhAHAHhHhH !!!)
+    end = 0
+    while end < len(text):
+        results = []
+        for type, find in finders:
+            result = find(text, end)
+            if result is not None:
+                results.append((type, result[0], result[1]))
+        if results:
+            results.sort(key=lambda item: item[1])
+            type, start, end = results[0]
+            yield type, start, end
+        else:
+            break
+
+def main(filename):# temp, testing purpose.
+    src = open(filename).read()
+    locator = Locator(src)
+    for type, start, end in scan(src):
+        print 50 * "-"
+        print type
+        print locator.lineno(start), "-", locator.lineno(end)
+        print src[start:end]
+
 def tree(source, indent=None):
     if isinstance(source, basestring):
         source = source.splitlines()
@@ -623,7 +639,8 @@ def format(item, name=None, level=1, module=None, comments=None):
         markdown += format(item, name, level+1, module, comments) + "\n"
     return markdown
 
-def main(module_name):
+# temporarily renamed.
+def _main(module_name):
     module = importlib.import_module(module_name)
     return format(module)
 
