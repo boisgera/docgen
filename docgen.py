@@ -464,47 +464,104 @@ class Locator(object):
                 return (i - 1, offset - self._offsets[i-1])
 
     def offset(self, lineno, offset):
-         return ([len for len in self._offsets[:lineno]] + [offset], 0)
+         return sum([len for len in self._offsets[:lineno]] + [offset], 0)
 
-def finder(pattern, *flags):
+# Q: should finder be named ? 
+# TODO: Finder composer (based on first match).
+
+# Finder have name AND return their name ???
+# register all finders globally ? Don't ?
+
+def finder(name, pattern=None, *flags):
+    if pattern is None:
+        pattern = "({0})".format(re.escape(name))
     pattern = re.compile(pattern, *flags)
     def find(text, start=0):
         match = pattern.search(text, start)
         if match is None:
             return None
         else:
-            return match.span(1)
+            start, end = match.span(1)
+            return name, start, end
+    find.name = name
     return find
 
-def scan(text):
-    finders = [("comment"  , finder(r"(#.*)\n?", re.MULTILINE)),
-               ("string"   , finder(r'((?:"""(?:[^"]|\\"|"{1,2}(?!"))*"""|"(?:[^"]|\\")*"))')),
-               ("string"   , finder(r"((?:'''(?:[^']|\\'|'{1,2}(?!'))*'''|'(?:[^']|\\')*'))")),
-               ("linecont" , finder(r"(\\\n)")),
-               ("blankline", finder(r"(^[ \t\r\f\v]*\n)", re.MULTILINE))]
 
-    # TODO: parenthesis-based line continuations
+def first_then_longest(item):
+    return item[1], -item[2]
 
-    end = 0
-    while end < len(text):
+def scan1(text):
+    finders  = []
+    finders += [finder(symbol) for symbol in "( [ { ) ] }".split()]
+    finders += [finder("BLANKLINE", r"(^[ \t\r\f\v]*\n)", re.MULTILINE)]
+    finders += [finder("COMMENT"  , r"(#.*\n?)")]
+    finders += [finder("LINECONT" , r"(\\\n)")]
+    finders += [finder("STRING"   , r'("(?:[^"]|\\")*")')]
+    finders += [finder("STRING"   , r'("""(?:[^"]|\\"|"{1,2}(?!"))*""")')]
+    finders += [finder("STRING"   , r"('(?: [^']|\\')*')")]
+    finders += [finder("STRING"   , r"('''(?:[^']|\\'|'{1,2}(?!'))*''')")]
+
+    # TODO: parenthesis and bracket-based line continuations
+
+    start = 0
+    while start < len(text):
         results = []
-        for type, find in finders:
-            result = find(text, end)
+        for find in finders:
+            result = find(text, start)
             if result is not None:
-                results.append((type, result[0], result[1]))
+                results.append(result)
         if results:
-            results.sort(key=lambda item: item[1])
-            type, start, end = results[0]
-            yield type, start, end
+            results.sort(key=first_then_longest)
+            result = results[0]
+            yield result
+            start = result[2]
         else:
             break
 
-def main(filename):# temp, testing purpose.
+def scan2(text):
+    match = {"(": ")", "[": "]", "{": "}", ")": "(", "]": "[", "}": "{"}
+    waitfor = []
+    comment = None
+
+    # Q: Manage multiple comment lines at the regular expression level ?
+    #    Only continue the comment line if the '#' start at the beginiing
+    #    of the line or tolerate whitespace before that ?
+
+    for name, start, end in scan1(text):
+        if name == "COMMENT":
+            if comment:
+                if comment[1] == start:
+                    comment = comment[0], end
+                    continue
+                else:
+                    yield "COMMENT", comment[0], comment[1]
+            comment = start, end
+        elif name in ["(", "[", "{"]:
+            waitfor.append((match[name], start))
+        elif waitfor and name == waitfor[-1][0]:
+            _, start = waitfor.pop()
+            yield match[name] + name, start, end
+        else:
+            if comment:
+                yield "COMMENT", comment[0], comment[1]
+                comment = None
+            yield name, start, end
+    else:
+        if comment:
+            yield "COMMENT", comment[0], comment[1]
+            comment = None
+
+def scan3(text):
+    output = list(scan2(text))
+    output.sort(key=first_then_longest)
+    return output
+
+def _main(filename):# temp, testing purpose.
     src = open(filename).read()
     locator = Locator(src)
-    for type, start, end in scan(src):
+    for name, start, end in scan3(src):
         print 50 * "-"
-        print type
+        print name
         print locator.lineno(start), "-", locator.lineno(end)
         print src[start:end]
 
@@ -640,7 +697,7 @@ def format(item, name=None, level=1, module=None, comments=None):
     return markdown
 
 # temporarily renamed.
-def _main(module_name):
+def main(module_name):
     module = importlib.import_module(module_name)
     return format(module)
 
@@ -652,5 +709,5 @@ def test():
 
 if __name__ == "__main__":
     module_name = sys.argv[1]
-    print main(module_name)
+    print _main(module_name)
 
