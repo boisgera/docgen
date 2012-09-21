@@ -22,6 +22,7 @@ import copy
 import importlib
 import inspect
 import json
+import os
 import pydoc
 import re
 import sys
@@ -494,7 +495,7 @@ def scan1(text):
     finders  = []
     finders += [finder(symbol) for symbol in "( [ { ) ] }".split()]
     finders += [finder("BLANKLINE", r"(^[ \t\r\f\v]*\n)", re.MULTILINE)]
-    finders += [finder("COMMENT"  , r"(#.*\n?(?:[ \t\r\f\v]*#.*\n?)*)")]
+    finders += [finder("COMMENT"  , r"([ \t\r\f\v]*#.*\n?(?:[ \t\r\f\v]*#.*\n?)*)")]
     finders += [finder("LINECONT" , r"(\\\n)")]
     finders += [finder("STRING"   , r'("(?:[^"]|\\")*")')]
     finders += [finder("STRING"   , r'("""(?:[^"]|\\"|"{1,2}(?!"))*""")')]
@@ -534,43 +535,217 @@ def scan3(text):
     output.sort(key=first_then_longest)
     return output
 
+def skip_lines(text):
+    lines = []
+    locator = Locator(text)
+    for name, start, end in scan3(text):
+        start, end = locator.lineno(start), locator.lineno(end)
+        if name == "BLANKLINE":
+            lines.append(start[0])
+        if name == "COMMENT":
+            start_line = start[0] + (start[1] != 0)
+            end_line = end[0] - 1
+            lines += [line for line in range(start_line, end_line + 1)]
+        if name == "LINECONT":
+            lines.append(start[0] + 1)
+        if name in "() [] {} STRING".split():
+            start_line = start[0] + 1
+            end_line = end[0]
+            lines += [line for line in range(start_line, end_line + 1)]
+    return set(lines)
+
+# TODO: parse source as a tree of (typed, named) indents, skipping what should
+#       be skipped.
+
+def tab_match(line, tabs):
+    pattern = re.compile("^[ \t\r\f\v]+", re.MULTILINE)
+    _tabs = tabs[:]
+    matched = []
+#    
+#    print 79*"-"
+#    print tabs
+#    print repr(line)
+#    print
+# 
+    while _tabs:
+        tab = _tabs.pop(0)
+        if line.startswith(tab):
+            matched.append(tab)
+            line = line[len(tab):]
+        else:
+            break
+
+    match = pattern.search(line)
+    if match:
+        extra = match.group(0)
+    else:
+        extra = None
+
+#    print "matched/tabs/extra", matched, tabs, bool(extra)
+
+    if matched == tabs or not extra:
+        return matched, extra
+    else:
+        raise ValueError("indentation error")
+
+
+def indents(text):
+    """
+    Return a list of (lineno, "INDENT"/"DEDENT") 
+
+    TODO: (lineno, number of tabs) instead
+    """
+    skip = skip_lines(text)
+    tabs = []
+    pattern = re.compile("^[ \t\r\f\v]+", re.MULTILINE)
+    for i, line in enumerate(text.splitlines()):
+        if i not in skip:
+            match, extra = tab_match(line, tabs)
+            if extra:
+                yield i, +1
+                tabs.append(extra)
+            else:
+                yield i, -(len(tabs) - len(match))
+                tabs = tabs[:len(match)]
+
+# Q: don't know if the tree structure is really required ... analyze the decls
+# as a stream of events directly ? 
+def tree(text):
+    lines = text.splitlines()
+    root = [[]]
+    for line, tab in indents(text):
+#        print 40*"-"
+#        print "line, tab:", line, tab
+#        print lines[line]
+        if tab > 0:
+            assert tab == 1
+            root.append([])
+        elif tab < 0:
+            for _ in range(-tab):
+                item = root.pop()
+                root[-1].append(item)
+        root[-1].append(line)
+    while len(root) >= 2:
+        item = root.pop()
+        root[-1].append(item)
+        #print root    
+    return root[0]
+
+def parse_declaration(line):
+    finders  = []
+    finders += [finder("function"  , r"^\s*c?p?def\s+([_0-9a-zA-Z]+)\s*\(")]
+    finders += [finder("assignment", r"^\s*([_0-9a-zA-Z]+)\s*=\s*")]
+    finders += [finder("class"     , r"^\s*class\s+([_0-9a-zA-Z]+)\s*\(")]
+    results, result = [], None
+    for find in finders:
+        result = find(line)
+        if result is not None:
+            results.append(result)
+    if results:
+        results.sort(key=first_then_longest)
+        result = results[0]
+        result = result[0], line[result[1]:result[2]]
+        return result
+    else:
+        return "unknown", "anonymous"
+
+def display(stree, lines, nest=""):
+   line, name, type, children = stree
+   print "{0:>5} {1:>9} | {2:>15} {3:>12} {4}".format(line, nest, name, "["+ type + "]", lines[line])
+   for child in children:
+       display(child, lines, nest=nest+"+")
+
+def show(root_or_tree, tab="", root=False):
+    if root:
+        root = root_or_tree
+        print "-----------"
+        for child in root:
+            show(child, tab=tab + "  ")    
+    else:
+        tree = root_or_tree
+        line, name, type, children = tree
+        print tab, line, name, type
+        for child in children:
+            show(child, tab=tab + "  ")
+
+def scope_tree(text, module_name="<root>"):
+    lines = text.splitlines()
+    root = [[0, module_name, "module", []]]
+
+    def fold():
+        item = root.pop()
+        root[-1][-1].append(item)
+
+    for line, tab in indents(text):
+        type, name = parse_declaration(lines[line])
+        #print 50*"-"
+        #print "tab:", tab
+        if tab <= 0 and len(root) >= 2:
+            for _ in range(-tab+1):
+                fold()
+        root.append([line, name, type, []])
+        #print root
+        #show(root, root=True)
+    while len(root) >= 2:
+        fold()
+        #print 79*"-"
+        #print root
+        #show(root, root=True)
+    return root[0]
+
+def get_declarations(tree, decls=None, ns=None):
+    if decls is None:
+        decls = []
+    line, name, type, children = tree
+
+    if type != "unknown":
+        qname = (ns + "." if ns else "") + name
+        decls.append((line, qname, type))
+        if type in ("class", "module"):
+            for child in children:
+                get_declarations(child, decls, qname)
+    return decls
+
+# Arguments: module name, optionally corresponding file.
 def _main(filename):# temp, testing purpose.
     src = open(filename).read()
-    locator = Locator(src)
-    for name, start, end in scan3(src):
-        print 50 * "-"
-        print name
-        print locator.lineno(start), "-", locator.lineno(end)
-        print src[start:end]
+    lines = src.splitlines()
+    module_name = os.path.basename(filename).split(".")[0]
+    t = scope_tree(src, module_name)
+    decls = get_declarations(t)
+    for line, name, type in decls:
+        print "{0:>5} | {1:>30}, {2}".format(line, name, type)
+    print
 
-def tree(source, indent=None):
-    if isinstance(source, basestring):
-        source = source.splitlines()
-    if indent is None:
-        indent = []
-    root = []
-    def indents(line):
-        if is_blank(line):
-            return 0
-        if not line.startswith(indent):
-            return -1
-        if line.startswith(indent) and line[len(indent):].startswith(" "):
-            return +1
-        else:
-            return 0
-    while source:
-        line = source.pop(0)
-        d = delta(line)
-        print d, line
-        if d == 0:
-            root.append(line)
-        elif d < 0:
-            return root
-        else:
-            _indent = re.match("\s*", line).group(0)
-            sub = [line, tree(source, indent=_indent)]
-            root.append(sub)
-    return root
+
+#def tree(source, indent=None):
+#    if isinstance(source, basestring):
+#        source = source.splitlines()
+#    if indent is None:
+#        indent = []
+#    root = []
+#    def indents(line):
+#        if is_blank(line):
+#            return 0
+#        if not line.startswith(indent):
+#            return -1
+#        if line.startswith(indent) and line[len(indent):].startswith(" "):
+#            return +1
+#        else:
+#            return 0
+#    while source:
+#        line = source.pop(0)
+#        d = delta(line)
+#        print d, line
+#        if d == 0:
+#            root.append(line)
+#        elif d < 0:
+#            return root
+#        else:
+#            _indent = re.match("\s*", line).group(0)
+#            sub = [line, tree(source, indent=_indent)]
+#            root.append(sub)
+#    return root
     
 
 def get_decl(line):
