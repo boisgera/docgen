@@ -29,21 +29,17 @@ import sys
 import types
 
 # Third-Party Libraries
-import pbs
+import script
+import sh
 
-# Local Libraries
+#
+# Metadata 
+# ------------------------------------------------------------------------------
+#
 
 __author__ = u"Sébastien Boisgérault <Sebastien.Boisgerault@mines-paristech.fr>"
-
-
-#
-# TODO
-# ------------------------------------------------------------------------------
-# 
-#   -  Allow the source file to be given as an option, to be used instead
-#      of an introspection that may be broken.
-#      Yes, I think of Cython, absolutely.
-#
+__license__ = "MIT License"
+__version__ = None
 
 #
 # Pandoc Document Model
@@ -190,7 +186,7 @@ def read(text):
     """
     Read a markdown text as a Pandoc instance.
     """
-    json_text = str(pbs.pandoc(read="markdown", write="json", _in=text))
+    json_text = str(sh.pandoc(read="markdown", write="json", _in=text))
     json_ = json.loads(json_text)
     return to_pandoc(json_)
 
@@ -199,7 +195,7 @@ def write(doc):
     Write a Pandoc instance as a markdown text.
     """
     json_text = json.dumps(to_json(doc))
-    return str(pbs.pandoc(read="json", write="markdown", _in=json_text))
+    return str(sh.pandoc(read="json", write="markdown", _in=json_text))
 
 #
 # Pandoc Transforms
@@ -664,7 +660,10 @@ def show(root_or_tree, tab="", root=False):
     else:
         tree = root_or_tree
         line, name, type, children = tree
-        print tab, line, name, type
+        if type == "unknown":
+            print "{0} {1:>5}".format(tab, line)
+        else:            
+            print "{0} {1:>5} {2} {3}".format(tab, line, name, "(" + type + ")")
         for child in children:
             show(child, tab=tab + "  ")
 
@@ -706,16 +705,118 @@ def get_declarations(tree, decls=None, ns=None):
                 get_declarations(child, decls, qname)
     return decls
 
-# Arguments: module name, optionally corresponding file.
-def _main(filename):# temp, testing purpose.
-    src = open(filename).read()
-    lines = src.splitlines()
-    module_name = os.path.basename(filename).split(".")[0]
-    t = scope_tree(src, module_name)
-    decls = get_declarations(t)
-    for line, name, type in decls:
-        print "{0:>5} | {1:>30}, {2}".format(line, name, type)
-    print
+
+def format(item, decls, name=None, level=1, module=None, comments=None):
+    if module is None and isinstance(item, types.ModuleType):
+        module = item
+    if comments is None:
+        comments = get_comments(module)
+    name, item, children = object_tree(item, name)
+    last_name = name.split(".")[-1]
+
+    markdown = ""
+    children = sorted(children, key=line_number_finder(item))
+
+
+    docstring = inspect.getdoc(item) or ""
+    if isinstance(item, types.ModuleType):
+        lines = docstring.splitlines()
+        if lines:
+            short = lines[0] # TODO: what if there is no short desc. ?
+            long  = "\n".join(lines[1:]).strip()
+        else:
+            short = ""
+            long  = ""
+
+        # TODO: make the distinction in short between titles (to be merged
+        # in the title, that does not end with a "." and a short description,
+        # that should not be merged (and ends with a ".").
+        markdown = level * "#" + " " + tt(name) + " -- " + short + "\n\n"
+        markdown += long + "\n\n"
+    elif isinstance(item, (types.FunctionType, types.MethodType)):
+        markdown += level * "#" + " " + tt(signature(item))+ " [`function`]".format(signature(item))
+        markdown += "\n\n"
+        doc = Pandoc.read(docstring)
+        set_min_header_level(doc, level + 1)
+        docstring = doc.write()
+        markdown += docstring + "\n"
+    elif isinstance(item, type):
+        markdown += level * "#" + " " + tt((last_name + "({0})").format(", ".join(t.__name__ for t in item.__bases__))) + " [`type`]"
+        markdown += "\n\n"
+        markdown += docstring + "\n\n"
+    else: # "primitive" types
+        # distinguish "constants" (with syntax __stuff__ or STUFF) from
+        # variables ? Dunno ...
+        markdown += level * "#" + " " + tt(last_name) + " [`{0}`]".format(type(item).__name__) + "\n\n"
+        if isinstance(item, unicode):
+            string = item.encode("utf-8")
+        else:
+            string = str(item)
+        markdown += tt(string) + "\n\n"
+        
+
+    for name, item, _children in children:
+        line_number = line_number_finder(module)((name, item, _children))
+        _comments = copy.copy(comments)
+        text, last_level = format_comments(comments, up_to=line_number)
+#        print ">>> " + name + " " + 60 * ">"
+#        print line_number
+#        print _comments
+#        print text
+#        print 79 * "<"
+      
+        markdown += text
+        if last_level:
+            level = last_level
+        markdown += format(item, name, level+1, module, comments) + "\n"
+    return markdown
+
+
+def docgen(module, source):
+    module_name = module.__name__
+    tree = scope_tree(source, module_name=module_name)
+    decls = get_declarations(tree)
+
+    markdown = ""
+
+    docstring = inspect.getdoc(module) or ""
+    doclines = docstring.split("\n")
+    if len(doclines) == 1:
+        short, long = doclines[0].strip(), ""
+    elif len(doclines) >= 2 and not doclines[1].strip():
+        short, long = doclines[0].strip(), "\n".join(doclines[2:])
+    else:
+        short, long = "\n".join(doclines)
+
+   
+    # Rk: we could make the distinction in short between titles (to be merged
+    # in the title, that does not end with a "." and a short description,
+    # that should not be merged (and ends with a ".").
+    markdown  = "#" + " " + tt(module_name)
+    markdown += (" -- " + short + "\n\n") if short else "\n\n"
+    markdown += long + "\n\n" if long else ""
+
+    # Think of the rest now:
+    #
+    #   - hierarchical formatting,
+    #   - concurrent access to special comments (alter section levels)
+    #     and items ...
+
+    print show(tree)
+    print 
+
+    return markdown
+
+## Arguments: module name, optionally corresponding file.
+#def _main(filename):# temp, testing purpose.
+#    src = open(filename).read()
+#    lines = src.splitlines()
+#    module_name = os.path.basename(filename).split(".")[0]
+#    t = scope_tree(src, module_name)
+#    decls = get_declarations(t)
+#    for line, name, type in decls:
+#        print "{0:>5} | {1:>30}, {2}".format(line, name, type)
+#    print
 
 
 #def tree(source, indent=None):
@@ -784,7 +885,7 @@ def format_comments(comments, up_to=INF):
     return markdown, last_header_level(markdown)
         
 
-def format(item, name=None, level=1, module=None, comments=None):
+def _format(item, name=None, level=1, module=None, comments=None):
     if module is None and isinstance(item, types.ModuleType):
         module = item
     if comments is None:
@@ -849,11 +950,33 @@ def format(item, name=None, level=1, module=None, comments=None):
         markdown += format(item, name, level+1, module, comments) + "\n"
     return markdown
 
-# temporarily renamed.
-def main(module_name):
-    module = importlib.import_module(module_name)
-    return format(module)
+def help():
+    """
+docgen [options] module
 
+options: -h, --help
+         -s FILE, --source=FILE 
+"""
+    return help.__doc__
+
+def main(args=None):
+    if args is None:
+        args = sys.argv[1:]
+    options, args = script.parse("help source=", args)
+    if options.help:
+        print help()
+        sys.exit(0)
+    elif not args or len(args) > 1:
+        print help()
+        sys.exit(1)
+    else:
+        module_name = args[0]
+
+    module = importlib.import_module(module_name)
+    filename = script.first(options.source) or inspect.getsourcefile(module)
+    source = open(filename).read()
+
+    print docgen(module, source)
 
 def test():
     # erf, does not work ???
@@ -861,6 +984,6 @@ def test():
     doctest.testmod()
 
 if __name__ == "__main__":
-    module_name = sys.argv[1]
-    print _main(module_name)
+    main()
+
 
