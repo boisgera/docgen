@@ -494,14 +494,12 @@ def scan1(text):
     finders  = []
     finders += [finder(symbol) for symbol in "( [ { ) ] }".split()]
     finders += [finder("BLANKLINE", r"(^[ \t\r\f\v]*\n)", re.MULTILINE)]
-    finders += [finder("COMMENT"  , r"(#.*\n?)")]
+    finders += [finder("COMMENT"  , r"(#.*\n?(?:[ \t\r\f\v]*#.*\n?)*)")]
     finders += [finder("LINECONT" , r"(\\\n)")]
     finders += [finder("STRING"   , r'("(?:[^"]|\\")*")')]
     finders += [finder("STRING"   , r'("""(?:[^"]|\\"|"{1,2}(?!"))*""")')]
     finders += [finder("STRING"   , r"('(?: [^']|\\')*')")]
     finders += [finder("STRING"   , r"('''(?:[^']|\\'|'{1,2}(?!'))*''')")]
-
-    # TODO: parenthesis and bracket-based line continuations
 
     start = 0
     while start < len(text):
@@ -521,35 +519,15 @@ def scan1(text):
 def scan2(text):
     match = {"(": ")", "[": "]", "{": "}", ")": "(", "]": "[", "}": "{"}
     waitfor = []
-    comment = None
-
-    # Q: Manage multiple comment lines at the regular expression level ?
-    #    Only continue the comment line if the '#' start at the beginiing
-    #    of the line or tolerate whitespace before that ?
 
     for name, start, end in scan1(text):
-        if name == "COMMENT":
-            if comment:
-                if comment[1] == start:
-                    comment = comment[0], end
-                    continue
-                else:
-                    yield "COMMENT", comment[0], comment[1]
-            comment = start, end
-        elif name in ["(", "[", "{"]:
+        if name in ["(", "[", "{"]:
             waitfor.append((match[name], start))
         elif waitfor and name == waitfor[-1][0]:
             _, start = waitfor.pop()
             yield match[name] + name, start, end
         else:
-            if comment:
-                yield "COMMENT", comment[0], comment[1]
-                comment = None
             yield name, start, end
-    else:
-        if comment:
-            yield "COMMENT", comment[0], comment[1]
-            comment = None
 
 def scan3(text):
     output = list(scan2(text))
