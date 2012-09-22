@@ -25,7 +25,9 @@ import json
 import os
 import pydoc
 import re
+import shutil
 import sys
+import tempfile
 import types
 
 # Third-Party Libraries
@@ -93,7 +95,6 @@ class Pandoc(PandocType):
         return read(text)
     def write(self):
         return write(self)
-
 
 class Block(PandocType):
     pass
@@ -406,7 +407,7 @@ def signature(function, name=None):
         args = args[:-2]
     return name + "({0})".format(args)
 
-def get_comments(module):
+def _get_comments(module):
     comments = []
     try:
         source = inspect.getsource(module)
@@ -486,6 +487,7 @@ def finder(name, pattern=None, *flags):
 
 def first_then_longest(item):
     return item[1], -item[2]
+
 
 def scan1(text):
     finders  = []
@@ -643,7 +645,7 @@ def parse_declaration(line):
         result = result[0], line[result[1]:result[2]]
         return result
     else:
-        return "unknown", "anonymous"
+        return None, None
 
 def display(stree, lines, nest=""):
    line, name, type, children = stree
@@ -706,7 +708,7 @@ def get_declarations(tree, decls=None, ns=None):
     return decls
 
 
-def format(item, decls, name=None, level=1, module=None, comments=None):
+def _format(item, decls, name=None, level=1, module=None, comments=None):
     if module is None and isinstance(item, types.ModuleType):
         module = item
     if comments is None:
@@ -772,11 +774,92 @@ def format(item, decls, name=None, level=1, module=None, comments=None):
     return markdown
 
 
+def get_comments(source):
+    comments = []
+    pattern = "^#\s*\n(# [^\n]*\n)*#\s*\n"
+    for match in re.finditer(pattern, source, re.MULTILINE):
+        line_number = source.count("\n", 0, match.start()) + 1
+        comment = match.group(0)
+        comment = "\n".join(line[2:] for line in comment.splitlines())
+        comments.append((line_number, comment))
+    return comments
+
+_formatters = []
+
+def format(name, item, level=1):
+    for match, formatter in _formatters:
+        if match(item):
+            return formatter(name, item, level)
+    else:
+        raise TypeError()
+
+def formatter(*types):
+    def register(formatter):
+        for type in types:
+            match = lambda item, type=type: isinstance(item, type)
+            _formatters.append((match, formatter))
+        if not types:
+            default = lambda item: True
+            _formatters.append((default, formatter))
+        return formatter
+    return register
+
+@formatter(types.FunctionType, types.MethodType)
+def format_function(name, item, level=1):
+    docstring = inspect.getdoc(item) or ""
+    markdown = level * "#" + " " + tt(signature(item))+ " [`function`]"
+    markdown += "\n\n"
+    if docstring:
+        doc = Pandoc.read(docstring)
+        set_min_header_level(doc, level + 1)
+        docstring = doc.write()
+        markdown += docstring + "\n"
+    return markdown
+
+@formatter(type) # TODO: recursivity
+def format_types(name, item, level=1):
+    docstring = inspect.getdoc(item) or ""
+    name = name.split(".")[-1]
+    markdown = level * "#" + " " + tt((name + "({0})").format(", ".join(t.__name__ for t in item.__bases__))) + " [`type`]"
+    markdown += "\n\n"
+    markdown += docstring + "\n\n"
+    return markdown
+
+@formatter()
+def format_default(name, item, level=1):
+    name = name.split(".")[-1]
+    markdown = level * "#" + " " + tt(name) + " [`{0}`]".format(type(item).__name__) + "\n\n"
+    if isinstance(item, unicode):
+        string = item.encode("utf-8")
+    else:
+        string = str(item)
+    markdown += tt(string) + "\n\n"
+    return markdown
+
+def get_object(name):
+    parts = name.split(".")
+    item = None
+    base = ""
+    while parts:
+        part = parts.pop(0)
+        base = (base + "." if base else "") + part
+        try: 
+            item = importlib.import_module(base)
+        except ImportError:
+            parts.insert(0, part)
+            break
+    if item is None:
+       raise ValueError()
+    for part in parts:
+       item = getattr(item, part)
+    return item
+
 def docgen(module, source):
     module_name = module.__name__
     tree = scope_tree(source, module_name=module_name)
-    decls = get_declarations(tree)
+    # decls = get_declarations(tree)
 
+    level = 1
     markdown = ""
 
     docstring = inspect.getdoc(module) or ""
@@ -788,7 +871,8 @@ def docgen(module, source):
     else:
         short, long = "\n".join(doclines)
 
-   
+    comments = get_comments(source)
+
     # Rk: we could make the distinction in short between titles (to be merged
     # in the title, that does not end with a "." and a short description,
     # that should not be merged (and ends with a ".").
@@ -796,14 +880,21 @@ def docgen(module, source):
     markdown += (" -- " + short + "\n\n") if short else "\n\n"
     markdown += long + "\n\n" if long else ""
 
-    # Think of the rest now:
-    #
-    #   - hierarchical formatting,
-    #   - concurrent access to special comments (alter section levels)
-    #     and items ...
-
-    print show(tree)
-    print 
+    for item in tree[3]:
+        lineno, name, type, children = item
+        if name:
+            #_comments = copy.copy(comments)
+            text, last_level = format_comments(comments, up_to=lineno)
+            markdown += text
+            if last_level:
+                level = last_level
+            name = module_name + "." + name
+            object = get_object(name)
+            markdown += format(name, object, level + 1)
+   
+#    print show(tree)
+#    print 
+#    print
 
     return markdown
 
@@ -882,8 +973,11 @@ def format_comments(comments, up_to=INF):
                 markdown += comment
         except IndexError:
             break
-    return markdown, last_header_level(markdown)
-        
+    if markdown:
+        return markdown, last_header_level(markdown)
+    else:
+        return "", None
+     
 
 def _format(item, name=None, level=1, module=None, comments=None):
     if module is None and isinstance(item, types.ModuleType):
@@ -952,17 +1046,20 @@ def _format(item, name=None, level=1, module=None, comments=None):
 
 def help():
     """
-docgen [options] module
+Return the following message:
 
-options: -h, --help
-         -s FILE, --source=FILE 
+    docgen [options] module
+
+    options: -h, --help .................................. display help and exit
+             -i FILE, --input=FILE ....................... Python module source file
+             -o OUTPUT, --output=OUTPUT .................. documentation output
 """
-    return help.__doc__
+    return "\n".join([line[4:] for line in inspect.getdoc(help).splitlines()[2:]])
 
 def main(args=None):
     if args is None:
         args = sys.argv[1:]
-    options, args = script.parse("help source=", args)
+    options, args = script.parse("help input= output=", args)
     if options.help:
         print help()
         sys.exit(0)
@@ -973,10 +1070,42 @@ def main(args=None):
         module_name = args[0]
 
     module = importlib.import_module(module_name)
-    filename = script.first(options.source) or inspect.getsourcefile(module)
+    filename = script.first(options.input) or inspect.getsourcefile(module)
     source = open(filename).read()
 
-    print docgen(module, source)
+    markdown = docgen(module, source)
+    if not options.output:
+        print markdown
+    else:
+        output = script.first(options.output)
+        basename = os.path.basename(output)
+        if len(basename.split(".")) >= 2:
+            ext = basename.split(".")[-1]
+        else:
+            ext = None
+        if ext == "tex":
+            sh.pandoc(read="markdown", toc=True, standalone=True, write="latex", o=output, _in=markdown)
+        elif ext == "pdf":
+            try:
+                latex = ".".join(basename.split(".")[:-1]) + ".tex"
+                build = tempfile.mkdtemp()
+                cwd = os.getcwd()
+                os.chdir(build)
+                sh.pandoc(read="markdown", toc=True, standalone=True, write="latex", o=latex, _in=markdown)
+                sh.pdflatex(latex)
+                sh.pdflatex(latex)
+                os.chdir(cwd)
+                sh.cp(os.path.join(build, latex[:-4] + ".pdf"), output)
+            finally:
+                try:
+                    shutil.rmtree(build) # delete directory
+                except OSError, e:
+                    if e.errno != 2: # code 2 - no such file or directory
+                        raise
+        else:
+            file = open(output, "w")
+            file.write(markdown)
+            file.close()
 
 def test():
     # erf, does not work ???
