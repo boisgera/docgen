@@ -376,6 +376,8 @@ def line_number_finder(container):
         return _line_number
     return line_number
 
+# Having issue with signature when the function is a built-in ...
+# need to fallback on source syntax analysis. (TODO).
 def signature(function, name=None):
     """
     Return the function signature as found in Python source:
@@ -552,19 +554,14 @@ def skip_lines(text):
             lines += [line for line in range(start_line, end_line + 1)]
     return set(lines)
 
-# TODO: parse source as a tree of (typed, named) indents, skipping what should
-#       be skipped.
+def get_lines(source, lineno):
+    pass
 
 def tab_match(line, tabs):
     pattern = re.compile("^[ \t\r\f\v]+", re.MULTILINE)
     _tabs = tabs[:]
     matched = []
-#    
-#    print 79*"-"
-#    print tabs
-#    print repr(line)
-#    print
-# 
+
     while _tabs:
         tab = _tabs.pop(0)
         if line.startswith(tab):
@@ -579,55 +576,28 @@ def tab_match(line, tabs):
     else:
         extra = None
 
-#    print "matched/tabs/extra", matched, tabs, bool(extra)
-
     if matched == tabs or not extra:
         return matched, extra
     else:
         raise ValueError("indentation error")
 
 
-def indents(text):
+def indents(source):
     """
-    Return a list of (lineno, "INDENT"/"DEDENT") 
-
-    TODO: (lineno, number of tabs) instead
+    Return a sequence of `(lineno, tabs)`
     """
-    skip = skip_lines(text)
+    skip = skip_lines(source)
     tabs = []
     pattern = re.compile("^[ \t\r\f\v]+", re.MULTILINE)
-    for i, line in enumerate(text.splitlines()):
+    for i, line in enumerate(source.splitlines()):
         if i not in skip:
             match, extra = tab_match(line, tabs)
             if extra:
                 yield i, +1
                 tabs.append(extra)
             else:
-                yield i, -(len(tabs) - len(match))
+                yield i, len(match) - len(tabs)
                 tabs = tabs[:len(match)]
-
-# Q: don't know if the tree structure is really required ... analyze the decls
-# as a stream of events directly ? 
-def tree(text):
-    lines = text.splitlines()
-    root = [[]]
-    for line, tab in indents(text):
-#        print 40*"-"
-#        print "line, tab:", line, tab
-#        print lines[line]
-        if tab > 0:
-            assert tab == 1
-            root.append([])
-        elif tab < 0:
-            for _ in range(-tab):
-                item = root.pop()
-                root[-1].append(item)
-        root[-1].append(line)
-    while len(root) >= 2:
-        item = root.pop()
-        root[-1].append(item)
-        #print root    
-    return root[0]
 
 def parse_declaration(line):
     finders  = []
@@ -647,52 +617,72 @@ def parse_declaration(line):
     else:
         return None, None
 
-def display(stree, lines, nest=""):
-   line, name, type, children = stree
-   print "{0:>5} {1:>9} | {2:>15} {3:>12} {4}".format(line, nest, name, "["+ type + "]", lines[line])
-   for child in children:
-       display(child, lines, nest=nest+"+")
+# ------------------------------------------------------------------------------
+# TODO: tree (or make_tree) function that produces a [lineno, info, children]
+#       (or even [info, children] ?) hierarchical structure. All the relevant
+#       information (type, name, etc.) is stored in the struct info. Later
+#       -- beyond syntax analysis -- introspection-based information can be
+#       added to the info object, such as the object itself, the docstring,
+#       etc. The special markdown comments should also be intertwined.
+#       In info, use None (for lineno, name, type when it is required.)
+#       
+# Q: how should line continuations be handled ? In a first approach,
+#    we don't do anything but later, maybe the lineno should be 
+#    replaced with a RANGE of lineno ? 
 
-def show(root_or_tree, tab="", root=False):
-    if root:
-        root = root_or_tree
-        print "-----------"
-        for child in root:
-            show(child, tab=tab + "  ")    
-    else:
-        tree = root_or_tree
-        line, name, type, children = tree
-        if type == "unknown":
-            print "{0} {1:>5}".format(tab, line)
-        else:            
-            print "{0} {1:>5} {2} {3}".format(tab, line, name, "(" + type + ")")
-        for child in children:
-            show(child, tab=tab + "  ")
+class Info(object):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+    def __getattr__(self, name):
+         return None
 
-def scope_tree(text, module_name="<root>"):
-    lines = text.splitlines()
-    root = [[0, module_name, "module", []]]
 
+# How to handle line cont ? Markdown comments and more generally multiple
+# line stuff ? replace lineno with a range ? start and end lineno + offset ?
+# OR (simpler): create a lineno -> lines function and use it :) (instead of
+# the skipping mecanism). Arf, not that simple ... Instead an iterator that
+# returns (lineno, lines) ? But to work without a major redesign, the lineno
+# would have to return something that is subject to tab analysis ... (that
+# does not suspend the identation state). And that cannot always be done,
+# YES IT CAN BE DONE
+# if the file start with comments for example. ... BULL ! Just attribute
+# this chunk to the module itself.
+
+
+# TODO: insert markdown comments at this level ?
+def make_tree(source):
+    lines = source.splitlines()
+    items = [(Info(source=source), [])]
+    def push(item):
+        items.append(item)
     def fold():
-        item = root.pop()
-        root[-1][-1].append(item)
-
-    for line, tab in indents(text):
-        type, name = parse_declaration(lines[line])
-        #print 50*"-"
-        #print "tab:", tab
-        if tab <= 0 and len(root) >= 2:
+        item = items.pop()
+        items[-1][-1].append(item)
+    for lineno, tab in indents(source):
+        type, name = parse_declaration(lines[lineno])
+        if tab <= 0 and len(items) >= 2:
             for _ in range(-tab+1):
                 fold()
-        root.append([line, name, type, []])
-        #print root
-        #show(root, root=True)
-    while len(root) >= 2:
+        info = Info(lineno=lineno, line=lines[lineno], name=name, type=type) 
+        push((info, []))
+    while len(items) >= 2:
         fold()
-        #print 79*"-"
-        #print root
-        #show(root, root=True)
-    return root[0]
+    return items[0]
+
+def display_tree(tree, nest=""):
+
+   template = "{info.lineno:>5} {nest:>9} | {info.name:>15} \
+{info.type:>12} {info.line}"
+   print template.format(info=tree[0], nest=nest)
+   children = tree[1]
+   for child in children:
+       display_tree(child, nest=nest+"+")
+
+if __name__ == "__main__":
+    source = open(sys.argv[1]).read()
+    display_tree(make_tree(source))
+
+# ------------------------------------------------------------------------------
 
 def get_declarations(tree, decls=None, ns=None):
     if decls is None:
@@ -786,6 +776,8 @@ def get_comments(source):
 
 _formatters = []
 
+# TODO: replace level with a (mutable) state.
+
 def format(name, item, level=1):
     for match, formatter in _formatters:
         if match(item):
@@ -804,7 +796,9 @@ def formatter(*types):
         return formatter
     return register
 
-@formatter(types.FunctionType, types.MethodType)
+# Rk: does not work properly with Cython "builtin" functions, investigate.
+
+@formatter(types.FunctionType, types.MethodType, types.BuiltinFunctionType)
 def format_function(name, item, level=1):
     docstring = inspect.getdoc(item) or ""
     markdown = level * "#" + " " + tt(signature(item))+ " [`function`]"
@@ -816,8 +810,11 @@ def format_function(name, item, level=1):
         markdown += docstring + "\n"
     return markdown
 
-@formatter(type) # TODO: recursivity
-def format_types(name, item, level=1):
+# TODO: recursivity. Beware: the comments should be 
+# intertwined. The most basic solution would duplicate
+# the comment management code. Can we do better ?
+@formatter(type)
+def format_type(name, item, level=1):
     docstring = inspect.getdoc(item) or ""
     name = name.split(".")[-1]
     markdown = level * "#" + " " + tt((name + "({0})").format(", ".join(t.__name__ for t in item.__bases__))) + " [`type`]"
@@ -1056,7 +1053,7 @@ Return the following message:
 """
     return "\n".join([line[4:] for line in inspect.getdoc(help).splitlines()[2:]])
 
-def main(args=None):
+def _main(args=None):
     if args is None:
         args = sys.argv[1:]
     options, args = script.parse("help input= output=", args)
@@ -1071,6 +1068,8 @@ def main(args=None):
 
     module = importlib.import_module(module_name)
     filename = script.first(options.input) or inspect.getsourcefile(module)
+    if filename is None:
+        raise RuntimeError("missing input filename")
     source = open(filename).read()
 
     markdown = docgen(module, source)
