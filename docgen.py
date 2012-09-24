@@ -581,7 +581,6 @@ def tab_match(line, tabs):
     else:
         raise ValueError("indentation error")
 
-
 def indents(source):
     """
     Return a sequence of `(lineno, tabs)`
@@ -630,11 +629,13 @@ def parse_declaration(line):
 #    we don't do anything but later, maybe the lineno should be 
 #    replaced with a RANGE of lineno ? 
 
+
+
 class Info(object):
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
-    def __getattr__(self, name):
-         return None
+#    def __getattr__(self, name):
+#         return undefined
 
 
 # How to handle line cont ? Markdown comments and more generally multiple
@@ -650,37 +651,54 @@ class Info(object):
 
 
 # TODO: insert markdown comments at this level ?
+
+# TODO: lookahead for the next lineno: the missing lines in the iteration 
+#       should be stacked and added to the node info.
+#      
+
 def make_tree(source):
     lines = source.splitlines()
-    items = [(Info(source=source), [])]
+    items = [(Info(lineno=None, name=None, type=None), [])]
+    item = items[0]
+    prev_lineno = 0
     def push(item):
         items.append(item)
     def fold():
         item = items.pop()
         items[-1][-1].append(item)
     for lineno, tab in indents(source):
+        source = "\n".join(lines[prev_lineno:lineno])
+        item[0].source = source
         type, name = parse_declaration(lines[lineno])
         if tab <= 0 and len(items) >= 2:
             for _ in range(-tab+1):
                 fold()
-        info = Info(lineno=lineno, line=lines[lineno], name=name, type=type) 
-        push((info, []))
+        info = Info(lineno=lineno, name=name, type=type)
+        item = (info, [])
+        push(item)
+        prev_lineno = lineno
+    else:
+        lineno = len(lines)
+        source = "\n".join(lines[prev_lineno:lineno])
+        item[0].source = source
     while len(items) >= 2:
         fold()
     return items[0]
 
 def display_tree(tree, nest=""):
-
-   template = "{info.lineno:>5} {nest:>9} | {info.name:>15} \
-{info.type:>12} {info.line}"
-   print template.format(info=tree[0], nest=nest)
+   template = "{info.lineno:>5} {nest:>9} | {info.name:>15} {info.type:>12}" 
+   left = template.format(info=tree[0], nest=nest)
+   lines = tree[0].source.splitlines()
+   print left, "|", lines[0]
+   for line in lines[1:]:
+       print len(left) * " ", "|", line
    children = tree[1]
    for child in children:
        display_tree(child, nest=nest+"+")
 
-if __name__ == "__main__":
-    source = open(sys.argv[1]).read()
-    display_tree(make_tree(source))
+#if __name__ == "__main__":
+#    source = open(sys.argv[1]).read()
+#    display_tree(make_tree(source))
 
 # ------------------------------------------------------------------------------
 
@@ -833,28 +851,54 @@ def format_default(name, item, level=1):
     markdown += tt(string) + "\n\n"
     return markdown
 
-def get_object(name):
-    parts = name.split(".")
-    item = None
-    base = ""
-    while parts:
-        part = parts.pop(0)
-        base = (base + "." if base else "") + part
-        try: 
-            item = importlib.import_module(base)
-        except ImportError:
-            parts.insert(0, part)
-            break
-    if item is None:
-       raise ValueError()
-    for part in parts:
-       item = getattr(item, part)
-    return item
+class Objects(object):
+    def __getitem__(self, qname):
+        parts = qname.split(".")
+        object = None
+        base = ""
+        while parts:
+            part = parts.pop(0)
+            base = (base + "." if base else "") + part
+            try: 
+                object = importlib.import_module(base)
+            except ImportError:
+                parts.insert(0, part)
+                break
+        if object is None:
+           raise KeyError
+        for part in parts:
+           try:
+               object = getattr(object, part)
+           except AttributeError:
+               raise KeyError
+        return object
+
+objects = Objects()
+
+def objectify(tree, ns=""):
+    name = tree[0].name
+    if name:
+        qname = (ns + "." if ns else "") + name
+        # print "qname", qname
+        try:
+            tree[0].object = objects[qname]
+        except KeyError:
+            pass
+        for child in tree[1]:
+            objectify(child, ns=qname)
+
+class Undefined(object):
+    def __repr__(self):
+        return "undefined"
+    __str__ = __repr__
+
+undefined = Undefined()
 
 def docgen(module, source):
     module_name = module.__name__
-    tree = scope_tree(source, module_name=module_name)
-    # decls = get_declarations(tree)
+    tree = make_tree(source)
+    tree[0].name = module_name
+    objectify(tree)
 
     level = 1
     markdown = ""
@@ -868,7 +912,7 @@ def docgen(module, source):
     else:
         short, long = "\n".join(doclines)
 
-    comments = get_comments(source)
+    # comments = get_comments(source)
 
     # Rk: we could make the distinction in short between titles (to be merged
     # in the title, that does not end with a "." and a short description,
@@ -877,17 +921,19 @@ def docgen(module, source):
     markdown += (" -- " + short + "\n\n") if short else "\n\n"
     markdown += long + "\n\n" if long else ""
 
-    for item in tree[3]:
-        lineno, name, type, children = item
-        if name:
+    for item in tree[1]:
+        lineno = item[0].lineno
+        type = item[0].type
+        object = getattr(item[0], "object", undefined)
+        name = item[0].name
+        # chidren = item[1]
+        if name is not None:
             #_comments = copy.copy(comments)
-            text, last_level = format_comments(comments, up_to=lineno)
-            markdown += text
-            if last_level:
-                level = last_level
-            name = module_name + "." + name
-            object = get_object(name)
-            markdown += format(name, object, level + 1)
+            # text, last_level = format_comments(comments, up_to=lineno)
+            # markdown += text
+            # if last_level:
+            #    level = last_level
+            markdown += format(module_name + "." + name, object, level + 1)
    
 #    print show(tree)
 #    print 
@@ -1053,7 +1099,7 @@ Return the following message:
 """
     return "\n".join([line[4:] for line in inspect.getdoc(help).splitlines()[2:]])
 
-def _main(args=None):
+def main(args=None):
     if args is None:
         args = sys.argv[1:]
     options, args = script.parse("help input= output=", args)
@@ -1113,5 +1159,7 @@ def test():
 
 if __name__ == "__main__":
     main()
+
+
 
 
