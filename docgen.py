@@ -794,36 +794,38 @@ def get_comments(source):
 
 _formatters = []
 
-# TODO: replace level with a (mutable) state.
 
-def format(name, item, level=1):
+def format(tree, state):
+    _match = False
     for match, formatter in _formatters:
-        if match(item):
-            return formatter(name, item, level)
+        #print formatter.__name__
+        try:
+            _match = match(tree)
+        except Exception:
+            pass
+        if _match:
+            return formatter(tree, state)
     else:
         raise TypeError()
 
-def formatter(*types):
+def formatter(match):
     def register(formatter):
-        for type in types:
-            match = lambda item, type=type: isinstance(item, type)
-            _formatters.append((match, formatter))
-        if not types:
-            default = lambda item: True
-            _formatters.append((default, formatter))
+        _formatters.append((match, formatter))
         return formatter
     return register
 
-# Rk: does not work properly with Cython "builtin" functions, investigate.
+Function = (types.FunctionType, types.MethodType, types.BuiltinFunctionType)
 
-@formatter(types.FunctionType, types.MethodType, types.BuiltinFunctionType)
-def format_function(name, item, level=1):
-    docstring = inspect.getdoc(item) or ""
-    markdown = level * "#" + " " + tt(signature(item))+ " [`function`]"
-    markdown += "\n\n"
+@formatter(lambda tree: isinstance(tree[0].object, Function))
+def format_function(tree, state):
+    object = tree[0].object
+    markdown  = state["level"] * "#" + " " 
+    markdown += tt(signature(object))+ " [`function`]\n"
+    markdown += "\n"
+    docstring = inspect.getdoc(object) or ""
     if docstring:
         doc = Pandoc.read(docstring)
-        set_min_header_level(doc, level + 1)
+        set_min_header_level(doc, state["level"] + 1)
         docstring = doc.write()
         markdown += docstring + "\n"
     return markdown
@@ -831,23 +833,31 @@ def format_function(name, item, level=1):
 # TODO: recursivity. Beware: the comments should be 
 # intertwined. The most basic solution would duplicate
 # the comment management code. Can we do better ?
-@formatter(type)
-def format_type(name, item, level=1):
-    docstring = inspect.getdoc(item) or ""
-    name = name.split(".")[-1]
-    markdown = level * "#" + " " + tt((name + "({0})").format(", ".join(t.__name__ for t in item.__bases__))) + " [`type`]"
-    markdown += "\n\n"
-    markdown += docstring + "\n\n"
+@formatter(lambda tree: isinstance(tree[0].object, type))
+def format_type(tree, state):
+    object = tree[0].object
+    name = tree[0].name
+    markdown  = state["level"] * "#" + " "
+    bases_names = [type.__name__ for type in object.__bases__] 
+    markdown += tt((name + "({0})").format(", ".join(bases_names))) 
+    markdown += " [`type`]\n"
+    markdown += "\n"
+    docstring = inspect.getdoc(object) or ""
+    if docstring:
+        markdown += docstring + "\n\n"
     return markdown
 
-@formatter()
-def format_default(name, item, level=1):
-    name = name.split(".")[-1]
-    markdown = level * "#" + " " + tt(name) + " [`{0}`]".format(type(item).__name__) + "\n\n"
-    if isinstance(item, unicode):
-        string = item.encode("utf-8")
+@formatter(lambda tree: True)
+def format_default(tree, state):
+    object = tree[0].object
+    name = tree[0].name
+    markdown  = state["level"] * "#" + " " + tt(name) 
+    markdown += " [`{0}`] \n".format(type(object).__name__)
+    markdown += "\n"
+    if isinstance(object, unicode):
+        string = object.encode("utf-8")
     else:
-        string = str(item)
+        string = str(object)
     markdown += tt(string) + "\n\n"
     return markdown
 
@@ -921,23 +931,16 @@ def docgen(module, source):
     markdown += (" -- " + short + "\n\n") if short else "\n\n"
     markdown += long + "\n\n" if long else ""
 
-    for item in tree[1]:
-        lineno = item[0].lineno
-        type = item[0].type
-        object = getattr(item[0], "object", undefined)
-        name = item[0].name
-        # chidren = item[1]
-        if name is not None:
-            #_comments = copy.copy(comments)
-            # text, last_level = format_comments(comments, up_to=lineno)
-            # markdown += text
-            # if last_level:
-            #    level = last_level
-            markdown += format(module_name + "." + name, object, level + 1)
-   
-#    print show(tree)
-#    print 
-#    print
+    state = {"level": level, "namespace": module_name}
+
+    for child in tree[1]:
+        try: # kinda sucks ...
+            name = child[0].name
+            object = child[0].name
+            markdown += format(child, state)
+        except AttributeError:
+            pass
+
 
     return markdown
 
