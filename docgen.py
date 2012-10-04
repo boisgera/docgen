@@ -9,11 +9,11 @@ print the full Markdown documentation with:
     $ docgen [MODULE-NAME]
 
 This script depends on the Python 2.7 standard library as well as the
-subprocess wrapper [`pbs`][pbs] and the [`pandoc`][pandoc] universal
+subprocess wrapper [`sh`][sh] and the [`pandoc`][pandoc] universal
 document converter.
 
 [markdown]: http://daringfireball.net/projects/markdown/syntax/
-[pbs]: https://github.com/amoffat/pbs/
+[sh]: https://github.com/amoffat/sh
 [pandoc]: http://johnmacfarlane.net/pandoc/
 """
 
@@ -254,7 +254,7 @@ def get_star_imports(module):
     except TypeError:
         source = ""
     pattern = r"\s*from\s*(\S*)\s*import\s*\*"
-    lines = source.splitlines()
+    lines = source.split("\n")
     modules = []
     for line in lines:
         match = re.match(pattern, line)
@@ -364,7 +364,7 @@ def line_number_finder(container):
                 source = inspect.getsource(container)
                 pattern = r"\s*{0}\s*=".format(name)
                 _line_number = 1
-                for line in source.splitlines():
+                for line in source.split("\n"):
                     if re.match(pattern, line):
                         return _line_number
                     else:
@@ -419,7 +419,7 @@ def _get_comments(module):
     for match in re.finditer(pattern, source, re.MULTILINE):
         line_number = source.count("\n", 0, match.start()) + 1
         comment = match.group(0)
-        comment = "\n".join(line[2:] for line in comment.splitlines())
+        comment = "\n".join(line[2:] for line in comment.split("\n"))
         comments.append((line_number, comment))
     return comments
        
@@ -588,7 +588,7 @@ def indents(source):
     skip = skip_lines(source)
     tabs = []
     pattern = re.compile("^[ \t\r\f\v]+", re.MULTILINE)
-    for i, line in enumerate(source.splitlines()):
+    for i, line in enumerate(source.split("\n")):
         if i not in skip:
             match, extra = tab_match(line, tabs)
             if extra:
@@ -634,8 +634,9 @@ def parse_declaration(line):
 class Info(object):
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
-#    def __getattr__(self, name):
-#         return undefined
+    def __repr__(self):
+        return "Info(**{0})".format(self.__dict__)
+    __str__ = __repr__
 
 
 # How to handle line cont ? Markdown comments and more generally multiple
@@ -656,9 +657,10 @@ class Info(object):
 #       should be stacked and added to the node info.
 #      
 
+# TODO: check that all blanklines are here.
 def make_tree(source):
-    lines = source.splitlines()
-    items = [(Info(lineno=None, name=None, type=None), [])]
+    lines = source.split("\n")
+    items = [(Info(lineno=0, name=None, type=None), [])]
     item = items[0]
     prev_lineno = 0
     def push(item):
@@ -679,22 +681,30 @@ def make_tree(source):
         prev_lineno = lineno
     else:
         lineno = len(lines)
-        source = "\n".join(lines[prev_lineno:lineno])
+        source = "\n".join(lines[prev_lineno:lineno]) # no trailing newline.
+        # splitlines does not honor it anyway. BITCH !. Use split("\n") instead.
         item[0].source = source
     while len(items) >= 2:
         fold()
     return items[0]
 
+# TODO: restore the BLANKLINEs ?
 def display_tree(tree, nest=""):
-   template = "{info.lineno:>5} {nest:>9} | {info.name:>15} {info.type:>12}" 
-   left = template.format(info=tree[0], nest=nest)
-   lines = tree[0].source.splitlines()
-   print left, "|", lines[0]
-   for line in lines[1:]:
-       print len(left) * " ", "|", line
-   children = tree[1]
-   for child in children:
-       display_tree(child, nest=nest+"+")
+    template = "{info.lineno:>5} {nest:>9} | {info.name:>15} {object_type:>12} {info.type:>12}"
+    try:
+        object = getattr(tree[0], "object")
+        object_type = type(object).__name__
+    except AttributeError:
+        object_type = None  
+    left = template.format(info=tree[0], nest=nest, object_type=object_type)
+    lines = tree[0].source.split("\n") 
+    if lines:
+        print left, "|", lines[0]
+        for line in lines[1:]:
+            print len(left) * " ", "|", line
+    children = tree[1]
+    for child in children:
+        display_tree(child, nest=nest+"+")
 
 #if __name__ == "__main__":
 #    source = open(sys.argv[1]).read()
@@ -730,7 +740,7 @@ def _format(item, decls, name=None, level=1, module=None, comments=None):
 
     docstring = inspect.getdoc(item) or ""
     if isinstance(item, types.ModuleType):
-        lines = docstring.splitlines()
+        lines = docstring.split("\n")
         if lines:
             short = lines[0] # TODO: what if there is no short desc. ?
             long  = "\n".join(lines[1:]).strip()
@@ -786,9 +796,9 @@ def get_comments(source):
     comments = []
     pattern = "^#\s*\n(# [^\n]*\n)*#\s*\n"
     for match in re.finditer(pattern, source, re.MULTILINE):
-        line_number = source.count("\n", 0, match.start()) + 1
+        line_number = source.count("\n", 0, match.start())
         comment = match.group(0)
-        comment = "\n".join(line[2:] for line in comment.splitlines())
+        comment = "\n".join(line[2:] for line in comment.split("\n")[1:])
         comments.append((line_number, comment))
     return comments
 
@@ -797,26 +807,25 @@ _formatters = []
 
 def format(tree, state):
     _match = False
-    for match, formatter in _formatters:
-        #print formatter.__name__
-        try:
-            _match = match(tree)
-        except Exception:
-            pass
+    for types, formatter in _formatters:
+        if not types:
+            _match = True
+        else:
+            try:
+                object = tree[0].object
+                _match = any(isinstance(object, type) for type in types)
+            except AttributeError:
+                pass
         if _match:
             return formatter(tree, state)
-    else:
-        raise TypeError()
 
-def formatter(match):
+def formatter(*types):
     def register(formatter):
-        _formatters.append((match, formatter))
+        _formatters.append((types, formatter))
         return formatter
     return register
 
-Function = (types.FunctionType, types.MethodType, types.BuiltinFunctionType)
-
-@formatter(lambda tree: isinstance(tree[0].object, Function))
+@formatter(types.FunctionType, types.MethodType, types.BuiltinFunctionType)
 def format_function(tree, state):
     object = tree[0].object
     markdown  = state["level"] * "#" + " " 
@@ -828,12 +837,15 @@ def format_function(tree, state):
         set_min_header_level(doc, state["level"] + 1)
         docstring = doc.write()
         markdown += docstring + "\n"
+    state = state.copy(); state["level"] = state["level"] + 1
+    for child in tree[1]:
+        markdown += format(child, state)
     return markdown
 
 # TODO: recursivity. Beware: the comments should be 
 # intertwined. The most basic solution would duplicate
 # the comment management code. Can we do better ?
-@formatter(lambda tree: isinstance(tree[0].object, type))
+@formatter(type)
 def format_type(tree, state):
     object = tree[0].object
     name = tree[0].name
@@ -845,22 +857,12 @@ def format_type(tree, state):
     docstring = inspect.getdoc(object) or ""
     if docstring:
         markdown += docstring + "\n\n"
+    state = state.copy(); state["level"] = state["level"] + 1
+    for child in tree[1]:
+        markdown += format(child, state)
     return markdown
 
-@formatter(lambda tree: True)
-def format_default(tree, state):
-    object = tree[0].object
-    name = tree[0].name
-    markdown  = state["level"] * "#" + " " + tt(name) 
-    markdown += " [`{0}`] \n".format(type(object).__name__)
-    markdown += "\n"
-    if isinstance(object, unicode):
-        string = object.encode("utf-8")
-    else:
-        string = str(object)
-    markdown += tt(string) + "\n\n"
-    return markdown
-
+# This is ugly. Create an object loader ? with a LoadError ?
 class Objects(object):
     def __getitem__(self, qname):
         parts = qname.split(".")
@@ -897,6 +899,106 @@ def objectify(tree, ns=""):
         for child in tree[1]:
             objectify(child, ns=qname)
 
+class Markdown(object):
+    def __init__(self, markdown):
+        self.markdown = markdown
+    def __str__(self):
+        return self.markdown
+    @staticmethod
+    def from_comment(comment):
+        # TODO: include the syntax check ?
+        lines = comment.split("\n")
+        lines = [line[2:] for line in lines[1:-1]]
+        return Markdown("\n".join(lines) + "\n")
+
+@formatter(Markdown)
+def format_markdown(tree, state):
+    object = tree[0].object
+    markdown = str(object)
+    doc = Pandoc.read(markdown)
+    levels = [item.args[0] for item in doc.iter() if isinstance(item, Header)]
+    if levels:
+        state["level"] = levels[-1] + 1
+    # BUG: won't work in this models as the formatters spawn a new *copy* of
+    #      the state for every children and the comments appear for now as
+    #      SONS of existing elements when the role we give them here is the
+    #      opposite (parents). This is quite a mess, even a change from son
+    #      to sibling (a pain in the ass but it should probably be done as
+    #      the mental model is simpler) won't be enough. So we have to make
+    #      this change AND replace the state copy replaces with a share/restore
+    #      feat. ? Study how this option would interact with comments (not very
+    #      well AFAICT).
+    return markdown
+
+@formatter(object)
+def format_object(tree, state):
+    object = tree[0].object
+    name = tree[0].name
+    markdown  = state["level"] * "#" + " " + tt(name) 
+    markdown += " [`{0}`] \n".format(type(object).__name__)
+    markdown += "\n"
+    if isinstance(object, unicode):
+        string = object.encode("utf-8")
+    else:
+        string = str(object)
+    markdown += tt(string) + "\n\n"
+    state = state.copy(); state["level"] = state["level"] + 1
+    for child in tree[1]:
+        markdown += format(child, state)
+    return markdown
+
+@formatter()
+def format_default(tree, state):
+    state = state.copy(); state["level"] = state["level"] + 1
+    markdown = ""
+    for child in tree[1]:
+        markdown += format(child, state)
+    return markdown
+
+def depth(tree):
+    if not tree[1]:
+       return 1
+    else:
+       return 1 + max(depth(child) for child in tree[1])
+
+# We can't do it like that ... the comment would have to be added AFTER the
+# component not under it ... and then the issue is that the comment is nested
+# with the same level as the component and the display loop may not go deep
+# enough to handle it. Arf, this is the issue with the "intertwined" model ...
+
+def commentify(tree):
+    source = getattr(tree[0], "source", None)
+    object = getattr(tree[0], "object", None)
+    if source is not None and (object is None or not isinstance(object, Markdown)):
+        pattern = r"^#\s*\n(?:# [^\n]*\n)*#\s*(\n|$)"
+        matches = list(re.finditer(pattern, source, re.MULTILINE))
+        #print source
+        for i, match in enumerate(matches):
+            start = source.count("\n", 0, match.start())
+            end   = source.count("\n", 0, match.end())
+            if i == 0:
+                tree[0].source = "\n".join(source.split("\n")[:start])
+            if i+1 < len(matches):
+                next = source.count("\n", 0, matches[i+1].start())
+            else:
+                next = len(source.split("\n"))
+            comment = Markdown.from_comment("\n".join(source.split("\n")[start:end]))
+            info = Info(name=None, lineno=tree[0].lineno + start, object=comment, type=None)
+            info.source = "\n".join(source.split("\n")[start:next])
+            tree[1].insert(i, (info, []))
+
+    for child in tree[1]:
+        #print id(child)
+        commentify(child)
+
+
+#if __name__ == "__main__":
+#    source = open(sys.argv[1]).read()
+#    tree = make_tree(source)
+#    objectify(tree)
+#    commentify(tree)
+
+
 class Undefined(object):
     def __repr__(self):
         return "undefined"
@@ -909,6 +1011,13 @@ def docgen(module, source):
     tree = make_tree(source)
     tree[0].name = module_name
     objectify(tree)
+
+    #print depth(tree)    
+
+    commentify(tree)
+
+    display_tree(tree)
+    print 5*"\n"
 
     level = 1
     markdown = ""
@@ -927,6 +1036,8 @@ def docgen(module, source):
     # Rk: we could make the distinction in short between titles (to be merged
     # in the title, that does not end with a "." and a short description,
     # that should not be merged (and ends with a ".").
+
+    # TODO: refactor into `format_module`.
     markdown  = "#" + " " + tt(module_name)
     markdown += (" -- " + short + "\n\n") if short else "\n\n"
     markdown += long + "\n\n" if long else ""
@@ -934,20 +1045,14 @@ def docgen(module, source):
     state = {"level": level, "namespace": module_name}
 
     for child in tree[1]:
-        try: # kinda sucks ...
-            name = child[0].name
-            object = child[0].name
-            markdown += format(child, state)
-        except AttributeError:
-            pass
-
+        markdown += format(child, state)
 
     return markdown
 
 ## Arguments: module name, optionally corresponding file.
 #def _main(filename):# temp, testing purpose.
 #    src = open(filename).read()
-#    lines = src.splitlines()
+#    lines = src.split("\n")
 #    module_name = os.path.basename(filename).split(".")[0]
 #    t = scope_tree(src, module_name)
 #    decls = get_declarations(t)
@@ -958,7 +1063,7 @@ def docgen(module, source):
 
 #def tree(source, indent=None):
 #    if isinstance(source, basestring):
-#        source = source.splitlines()
+#        source = source.split("\n")
 #    if indent is None:
 #        indent = []
 #    root = []
@@ -1039,7 +1144,7 @@ def _format(item, name=None, level=1, module=None, comments=None):
 
     docstring = inspect.getdoc(item) or ""
     if isinstance(item, types.ModuleType):
-        lines = docstring.splitlines()
+        lines = docstring.split("\n")
         if lines:
             short = lines[0] # TODO: what if there is no short desc. ?
             long  = "\n".join(lines[1:]).strip()
@@ -1100,7 +1205,7 @@ Return the following message:
              -i FILE, --input=FILE ....................... Python module source file
              -o OUTPUT, --output=OUTPUT .................. documentation output
 """
-    return "\n".join([line[4:] for line in inspect.getdoc(help).splitlines()[2:]])
+    return "\n".join([line[4:] for line in inspect.getdoc(help).split("\n")[2:]])
 
 def main(args=None):
     if args is None:
