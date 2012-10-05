@@ -706,10 +706,6 @@ def display_tree(tree, nest=""):
     for child in children:
         display_tree(child, nest=nest+"+")
 
-#if __name__ == "__main__":
-#    source = open(sys.argv[1]).read()
-#    display_tree(make_tree(source))
-
 # ------------------------------------------------------------------------------
 
 def get_declarations(tree, decls=None, ns=None):
@@ -817,6 +813,7 @@ def format(tree, state):
             except AttributeError:
                 pass
         if _match:
+            state["restore"] = True
             return formatter(tree, state)
 
 def formatter(*types):
@@ -837,9 +834,12 @@ def format_function(tree, state):
         set_min_header_level(doc, state["level"] + 1)
         docstring = doc.write()
         markdown += docstring + "\n"
-    state = state.copy(); state["level"] = state["level"] + 1
+    level = state["level"]
+    state["level"] = level + 1
     for child in tree[1]:
         markdown += format(child, state)
+    if state["restore"]:
+        state["level"] = level
     return markdown
 
 # TODO: recursivity. Beware: the comments should be 
@@ -857,9 +857,12 @@ def format_type(tree, state):
     docstring = inspect.getdoc(object) or ""
     if docstring:
         markdown += docstring + "\n\n"
-    state = state.copy(); state["level"] = state["level"] + 1
+    level = state["level"]
+    state["level"] = level + 1
     for child in tree[1]:
         markdown += format(child, state)
+    if state["restore"]:
+        state["level"] = level
     return markdown
 
 # This is ugly. Create an object loader ? with a LoadError ?
@@ -906,6 +909,7 @@ class Markdown(object):
         return self.markdown
     @staticmethod
     def from_comment(comment):
+        #print "***", repr(comment)
         # TODO: include the syntax check ?
         lines = comment.split("\n")
         lines = [line[2:] for line in lines[1:-1]]
@@ -915,10 +919,14 @@ class Markdown(object):
 def format_markdown(tree, state):
     object = tree[0].object
     markdown = str(object)
+
+    #print "***", markdown
+
     doc = Pandoc.read(markdown)
     levels = [item.args[0] for item in doc.iter() if isinstance(item, Header)]
     if levels:
         state["level"] = levels[-1] + 1
+        state["restore"] = False # disable the parent(s) level restore.
     # BUG: won't work in this models as the formatters spawn a new *copy* of
     #      the state for every children and the comments appear for now as
     #      SONS of existing elements when the role we give them here is the
@@ -942,17 +950,23 @@ def format_object(tree, state):
     else:
         string = str(object)
     markdown += tt(string) + "\n\n"
-    state = state.copy(); state["level"] = state["level"] + 1
+    level = state["level"]
+    state["level"] = level + 1
     for child in tree[1]:
         markdown += format(child, state)
+    if state["restore"]:
+        state["level"] = level
     return markdown
 
 @formatter()
 def format_default(tree, state):
-    state = state.copy(); state["level"] = state["level"] + 1
     markdown = ""
+    level = state["level"]
+    state["level"] = level + 1
     for child in tree[1]:
         markdown += format(child, state)
+    if state["restore"]:
+        state["level"] = level
     return markdown
 
 def depth(tree):
@@ -966,6 +980,10 @@ def depth(tree):
 # with the same level as the component and the display loop may not go deep
 # enough to handle it. Arf, this is the issue with the "intertwined" model ...
 
+
+# BUG: the match of the comment (or the restructuration ?) may omit characters.
+#      That's probably because if the special comments ENDS the source, there is
+#      no trailing newline.
 def commentify(tree):
     source = getattr(tree[0], "source", None)
     object = getattr(tree[0], "object", None)
@@ -974,21 +992,28 @@ def commentify(tree):
         matches = list(re.finditer(pattern, source, re.MULTILINE))
         #print source
         for i, match in enumerate(matches):
-            start = source.count("\n", 0, match.start())
-            end   = source.count("\n", 0, match.end())
+            start = match.start()
+            end = match.end()
+#            print "***"
+#            #print repr(source)
+#            print repr(source[match.start():match.end()])
+#            print "***"
+            #start = source.count("\n", 0, match.start())
+            #end   = source.count("\n", 0, match.end())
             if i == 0:
-                tree[0].source = "\n".join(source.split("\n")[:start])
+                tree[0].source = source[:start]#"\n".join(source.split("\n")[:start])
             if i+1 < len(matches):
-                next = source.count("\n", 0, matches[i+1].start())
+                next = matches[i+1].start() #source.count("\n", 0, matches[i+1].start())
             else:
-                next = len(source.split("\n"))
-            comment = Markdown.from_comment("\n".join(source.split("\n")[start:end]))
-            info = Info(name=None, lineno=tree[0].lineno + start, object=comment, type=None)
-            info.source = "\n".join(source.split("\n")[start:next])
+                next = len(source) # len(source.split("\n"))
+            comment = Markdown.from_comment(source[start:end])
+            # Markdown.from_comment("\n".join(source.split("\n")[start:end]))
+            line_start = source.count("\n", 0, start)
+            info = Info(name=None, lineno=tree[0].lineno + line_start, object=comment, type=None)
+            info.source = source[start:next]#"\n".join(source.split("\n")[start:next])
             tree[1].insert(i, (info, []))
 
     for child in tree[1]:
-        #print id(child)
         commentify(child)
 
 
@@ -1016,8 +1041,8 @@ def docgen(module, source):
 
     commentify(tree)
 
-    display_tree(tree)
-    print 5*"\n"
+#    display_tree(tree)
+#    print 5*"\n"
 
     level = 1
     markdown = ""
@@ -1042,7 +1067,7 @@ def docgen(module, source):
     markdown += (" -- " + short + "\n\n") if short else "\n\n"
     markdown += long + "\n\n" if long else ""
 
-    state = {"level": level, "namespace": module_name}
+    state = {"level": level, "namespace": module_name, "restore": True}
 
     for child in tree[1]:
         markdown += format(child, state)
