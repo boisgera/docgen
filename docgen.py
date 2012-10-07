@@ -44,6 +44,18 @@ __license__ = "MIT License"
 __version__ = None
 
 #
+# TODOs
+# ------------------------------------------------------------------------------
+#
+#   - handle assignment of class and function differently from their definition.
+#     (examine the type info and not only the type of the object). Use cases:
+#     `__str__ = __repr__` in a class, multiple names of classes/functions to
+#     preserve a legacy API, etc.
+#
+#   - decorators.
+#
+
+#
 # Pandoc Document Model
 # ------------------------------------------------------------------------------
 #
@@ -77,8 +89,8 @@ class PandocType(object):
         apply(transform)(self)
     def __json__(self):
         """
-        Convert `self` into a Python object that may be encoded into text
-        by `json.dumps`.
+        Convert the `PandocType instance` into a native Python structure that 
+        may be encoded into text by `json.dumps`.
         """
         return {type(self).__name__: to_json(list(self.args))}
     def __repr__(self):
@@ -145,7 +157,7 @@ class Str(Inline):
         return {"Str": self.args[0]}
 
 #
-# **Remark:** `Space` is encoded as a string in exported json. 
+# **Remark:** `Space` is encoded as a string in the json exported by pandoc.
 # That's kind of a problem because we won't typematch it like the other
 # instances and searching for the string "Space" may lead to false positive.
 # The only way to deal with it is to be aware of the context where the Space
@@ -228,10 +240,9 @@ def set_min_header_level(doc, minimum=1):
             increase_header_level(doc, delta)
 
 #
-# TODO 
-#   : insert HorizontalRule before every level 2 section. Unless I do that
-#     at the LaTeX level ? Or don't do it generally, just before functions
-#     and classes (no transform, do it directly during markdown generation) ?
+# **TODO:** insert HorizontalRule before every level 2 section. Unless I do that
+# at the LaTeX level ? Or don't do it generally, just before functions
+# and classes (no transform, do it directly during markdown generation) ?
 #
 
 #
@@ -239,11 +250,11 @@ def set_min_header_level(doc, minimum=1):
 #
 
 #
-# TODO
-#   : hierarchical structure: class method docs should be browsed too.
-#     return a list that contains [name, item, docstring, children] ?
-#     add extra stuff such as line / file, source code, etc. ? Put this
-#     stuff into an info dict ?
+# **TODO:**
+# hierarchical structure: class method docs should be browsed too.
+# return a list that contains [name, item, docstring, children] ?
+# add extra stuff such as line / file, source code, etc. ? Put this
+# stuff into an info dict ?
 #
 _targets = "module dict weakref doc builtins file name package"
 _hidden_magic = ["__{0}__".format(name) for name in _targets.split()]
@@ -988,26 +999,18 @@ def commentify(tree):
     source = getattr(tree[0], "source", None)
     object = getattr(tree[0], "object", None)
     if source is not None and (object is None or not isinstance(object, Markdown)):
-        pattern = r"^#\s*\n(?:# [^\n]*\n)*#\s*(\n|$)"
+        pattern = r"^#\s*\n(?:#(?: [^\n]*|[ \t\r\f\v]*)\n)*#\s*(\n|$)"
         matches = list(re.finditer(pattern, source, re.MULTILINE))
-        #print source
         for i, match in enumerate(matches):
             start = match.start()
             end = match.end()
-#            print "***"
-#            #print repr(source)
-#            print repr(source[match.start():match.end()])
-#            print "***"
-            #start = source.count("\n", 0, match.start())
-            #end   = source.count("\n", 0, match.end())
             if i == 0:
-                tree[0].source = source[:start]#"\n".join(source.split("\n")[:start])
+                tree[0].source = source[:start]
             if i+1 < len(matches):
-                next = matches[i+1].start() #source.count("\n", 0, matches[i+1].start())
+                next = matches[i+1].start()
             else:
-                next = len(source) # len(source.split("\n"))
+                next = len(source)
             comment = Markdown.from_comment(source[start:end])
-            # Markdown.from_comment("\n".join(source.split("\n")[start:end]))
             line_start = source.count("\n", 0, start)
             info = Info(name=None, lineno=tree[0].lineno + line_start, object=comment, type=None)
             info.source = source[start:next]#"\n".join(source.split("\n")[start:next])
@@ -1031,7 +1034,7 @@ class Undefined(object):
 
 undefined = Undefined()
 
-def docgen(module, source):
+def docgen(module, source, debug=False):
     module_name = module.__name__
     tree = make_tree(source)
     tree[0].name = module_name
@@ -1041,8 +1044,9 @@ def docgen(module, source):
 
     commentify(tree)
 
-#    display_tree(tree)
-#    print 5*"\n"
+    if debug:
+        display_tree(tree)
+        print 5*"\n"
 
     level = 1
     markdown = ""
@@ -1235,7 +1239,7 @@ Return the following message:
 def main(args=None):
     if args is None:
         args = sys.argv[1:]
-    options, args = script.parse("help input= output=", args)
+    options, args = script.parse("help input= output= debug", args)
     if options.help:
         print help()
         sys.exit(0)
@@ -1251,7 +1255,9 @@ def main(args=None):
         raise RuntimeError("missing input filename")
     source = open(filename).read()
 
-    markdown = docgen(module, source)
+    debug = bool(options.debug)
+
+    markdown = docgen(module, source, debug)
     if not options.output:
         print markdown
     else:
