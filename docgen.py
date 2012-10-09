@@ -47,9 +47,12 @@ __version__ = None
 # TODOs
 # ------------------------------------------------------------------------------
 #
-#   - use syntaxtic (source) analysis to produce the function signatures.
+#   - use syntaxtic (source) analysis to produce the function signatures ... ok.
 #  
-#   - manage to documention Cython extension classes ?
+#   - manage to documention Cython extension classes ? ..................... ok.
+#
+#   - handle `wrapper_descriptor` type as a function (Cython). Get the type
+#     as type(str.__dict__['__add__']).
 #
 #   - handle assignment of class and function differently from their definition.
 #     (examine the type info and not only the type of the object). Use cases:
@@ -632,7 +635,7 @@ def parse_declaration(line):
     finders  = []
     finders += [finder("function"  , r"^\s*c?p?def\s+([_0-9a-zA-Z]+)\s*\(")]
     finders += [finder("assignment", r"^\s*([_0-9a-zA-Z]+)\s*=\s*")]
-    finders += [finder("class"     , r"^\s*class\s+([_0-9a-zA-Z]+)\s*\(")]
+    finders += [finder("class"     , r"^\s*(?:cdef)?\s*class\s+([_0-9a-zA-Z]+)")]
     results, result = [], None
     for find in finders:
         result = find(line)
