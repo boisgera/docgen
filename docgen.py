@@ -47,12 +47,28 @@ __version__ = None
 # TODOs
 # ------------------------------------------------------------------------------
 #
+#   - use syntaxtic (source) analysis to produce the function signatures.
+#  
+#   - manage to documention Cython extension classes ?
+#
 #   - handle assignment of class and function differently from their definition.
 #     (examine the type info and not only the type of the object). Use cases:
 #     `__str__ = __repr__` in a class, multiple names of classes/functions to
 #     preserve a legacy API, etc.
 #
+#   - manage the documentation / docstrings of properties.
+#
 #   - decorators.
+#
+#   - flag to hide "private" fields. Or at least, their doc should be deactivated
+#     by default.
+#  
+#   - generalize the trick used to compose the document title ? Combine the
+#     object tt name with the one-liner description ? So that the titles are
+#     not 100% tt (code) anymore but (bold) text, made for the human ? Or even,
+#     hide the code, signature, etc one level below ? Would be ok for classes,
+#     where the short doc is a title, not such much for functions for which the
+#     onel-liner is a sentence (action performed by the function).
 #
 
 #
@@ -112,6 +128,9 @@ class Block(PandocType):
     pass
 
 class Header(Block):
+    pass
+
+class Table(Block):
     pass
 
 class DefinitionList(Block):
@@ -836,8 +855,20 @@ def formatter(*types):
 @formatter(types.FunctionType, types.MethodType, types.BuiltinFunctionType)
 def format_function(tree, state):
     object = tree[0].object
-    markdown  = state["level"] * "#" + " " 
-    markdown += tt(signature(object))+ " [`function`]\n"
+    markdown  = state["level"] * "#" + " "
+
+    # syntax-based signature (instead of introspection-based)
+    # Quick and dirty. Need something more robust that will used multiline,
+    # get rid of the ":", of potential comments, etc.
+    pattern = r"\s*(?:c|cp)?def\s+(.+)$"
+    pattern = re.compile(pattern, re.MULTILINE)
+    signature = pattern.match(tree[0].source).group(1).strip()[:-1]
+
+    #print "signature:", signature
+ 
+    markdown += tt(signature)
+
+    markdown += " [`function`]\n"
     markdown += "\n"
     docstring = inspect.getdoc(object) or ""
     if docstring:
@@ -860,15 +891,18 @@ def format_function(tree, state):
 def format_type(tree, state):
     object = tree[0].object
     name = tree[0].name
-    markdown  = state["level"] * "#" + " "
+    level = state["level"]
+    markdown  = level * "#" + " "
     bases_names = [type.__name__ for type in object.__bases__] 
     markdown += tt((name + "({0})").format(", ".join(bases_names))) 
     markdown += " [`type`]\n"
     markdown += "\n"
     docstring = inspect.getdoc(object) or ""
     if docstring:
-        markdown += docstring + "\n\n"
-    level = state["level"]
+        doc = Pandoc.read(docstring)
+        set_min_header_level(doc, level + 1)
+        docstring = doc.write()
+        markdown += docstring + "\n"
     state["level"] = level + 1
     for child in tree[1]:
         markdown += format(child, state)
@@ -1071,7 +1105,9 @@ def docgen(module, source, debug=False):
     markdown += (" -- " + short + "\n\n") if short else "\n\n"
     markdown += long + "\n\n" if long else ""
 
-    state = {"level": level, "namespace": module_name, "restore": True}
+    state = {"level": level, 
+             "namespace": module_name, 
+             "restore": True}
 
     for child in tree[1]:
         markdown += format(child, state)
@@ -1276,8 +1312,8 @@ def main(args=None):
                 cwd = os.getcwd()
                 os.chdir(build)
                 sh.pandoc(read="markdown", toc=True, standalone=True, write="latex", o=latex, _in=markdown)
-                sh.pdflatex(latex)
-                sh.pdflatex(latex)
+                sh.xelatex(latex)
+                sh.xelatex(latex)
                 os.chdir(cwd)
                 sh.cp(os.path.join(build, latex[:-4] + ".pdf"), output)
             finally:
