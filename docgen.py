@@ -52,7 +52,8 @@ __version__ = None
 #   - manage to documention Cython extension classes ? ..................... ok.
 #
 #   - handle `wrapper_descriptor` type as a function (Cython). Get the type
-#     as type(str.__dict__['__add__']).
+#     as type(str.__dict__['__add__']). Do the same with method_descriptor
+#     obtained as type(str.center)
 #
 #   - handle assignment of class and function differently from their definition.
 #     (examine the type info and not only the type of the object). Use cases:
@@ -855,7 +856,14 @@ def formatter(*types):
         return formatter
     return register
 
-@formatter(types.FunctionType, types.MethodType, types.BuiltinFunctionType)
+WrapperDescriptorType = type(str.__dict__['__add__'])
+MethodDescriptorType = type(str.center)
+
+FunctionTypes = [types.FunctionType, types.MethodType, 
+                 types.BuiltinFunctionType, WrapperDescriptorType,
+                 MethodDescriptorType]
+
+@formatter(*FunctionTypes)
 def format_function(tree, state):
     object = tree[0].object
     markdown  = state["level"] * "#" + " "
