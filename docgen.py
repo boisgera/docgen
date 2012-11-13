@@ -873,6 +873,7 @@ def format_function(tree, state):
     # get rid of the ":", of potential comments, etc.
     pattern = r"\s*(?:c|cp)?def\s+(.+)$"
     pattern = re.compile(pattern, re.MULTILINE)
+
     signature = pattern.match(tree[0].source).group(1).strip()[:-1]
 
     #print "signature:", signature
