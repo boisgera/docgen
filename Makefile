@@ -3,8 +3,8 @@ all: pdf
 
 .PHONY: clean
 clean:
-	@rm -rf `git ls-files --other --exclude-standard`
-	@find . -type d -empty -delete
+	@sudo rm -rf `git ls-files --other --exclude-standard`
+	@sudo find . -type d -empty -delete
 
 .PHONY: pdf
 pdf: docgen.pdf
