@@ -72,7 +72,7 @@ __version__ = None
 #     not 100% tt (code) anymore but (bold) text, made for the human ? Or even,
 #     hide the code, signature, etc one level below ? Would be ok for classes,
 #     where the short doc is a title, not such much for functions for which the
-#     onel-liner is a sentence (action performed by the function).
+#     one-liner is a sentence (action performed by the function).
 #
 
 #
@@ -443,19 +443,19 @@ def signature(function, name=None):
         args = args[:-2]
     return name + "({0})".format(args)
 
-def _get_comments(module):
-    comments = []
-    try:
-        source = inspect.getsource(module)
-    except IOError:
-        return comment
-    pattern = "^#\s*\n(# [^\n]*\n)*#\s*\n"
-    for match in re.finditer(pattern, source, re.MULTILINE):
-        line_number = source.count("\n", 0, match.start()) + 1
-        comment = match.group(0)
-        comment = "\n".join(line[2:] for line in comment.split("\n"))
-        comments.append((line_number, comment))
-    return comments
+#def _get_comments(module):
+#    comments = []
+#    try:
+#        source = inspect.getsource(module)
+#    except IOError:
+#        return comment
+#    pattern = "^#\s*\n(# [^\n]*\n)*#\s*\n"
+#    for match in re.finditer(pattern, source, re.MULTILINE):
+#        line_number = source.count("\n", 0, match.start()) + 1
+#        comment = match.group(0)
+#        comment = "\n".join(line[2:] for line in comment.split("\n"))
+#        comments.append((line_number, comment))
+#    return comments
        
 def last_header_level(markdown):
     doc = Pandoc.read(markdown)
@@ -464,7 +464,7 @@ def last_header_level(markdown):
         return levels[-1]
 
 #
-# Source Declaration Analysis
+# Source Code Analysis
 # ------------------------------------------------------------------------------
 #
 
@@ -481,51 +481,106 @@ def last_header_level(markdown):
 #       Have a INDENT, DEINDENT (?). START_DECL, END_DECL, START/END-COMMENT,
 #       same for docstrings, etc. etc.
 
-def is_blank(line):
-    whitespace = "\s*"
-    return re.match(whitespace, line).group(0) == line
+# DEPRECATED:
+#
+# def is_blank(line):
+#     """Identify blank lines"""
+#     whitespace = "\s*"
+#     return re.match(whitespace, line).group(0) == line
 
 class Locator(object):
+    """Convert locations in text.
+
+    Locations are described either by
+    `offset`, an absolute character offset with respect to the
+    start of `text` 
+    or
+    a pair `(lineno, rel_offset)` of a line number offset
+    (starts at `0`) and an offset relative to the start of the line.
+    """
     def __init__(self, text):
+        """
+        Create a `Locator` instance for the string `text`.
+        """
         self._offsets = [0]
         for line in text.split("\n"):
             self._offsets.append(self._offsets[-1] + len(line) + 1)
 
-    def lineno(self, offset):
-        "Return lineno - 1 and the relative offset"
+    def __call__(self, offset):
+        """
+        Compute the location `(lineno, rel_offset)`
+        """
         for i, _offset in enumerate(self._offsets):
             if offset < _offset:
                 return (i - 1, offset - self._offsets[i-1])
 
-    def offset(self, lineno, offset):
-         return sum([len for len in self._offsets[:lineno]] + [offset], 0)
+    def offset(self, lineno, rel_offset):
+         """
+         Compute the location `offset`
+         """
+         return sum([len for len in self._offsets[:lineno]] + [rel_offset], 0)
 
-# Q: should finder be named ? 
-# TODO: Finder composer (based on first match).
+#
+# -----
+#
 
-# Finder have name AND return their name ???
-# register all finders globally ? Don't ?
+def finder(symbol, pattern=None, *flags):
+    """
+    Create a function that searches for locations of a a pattern in a text.
 
-def finder(name, pattern=None, *flags):
+    Arguments
+    ---------
+
+      - `symbol`: the name of the symbol to search,
+      - `pattern`: a regular expression, defaults to `re.escape(symbol)`,
+      - `flags`: extra flags passed to `re.search` function internally.
+
+    Returns
+    -------
+
+      - a finder function whose arguments are :
+
+          - `text`: the text to be searched, 
+          - `start`: the start index, defaults to `0`.
+        
+        that returns:
+
+          - `(symbol, start, end)` or `None` when no match is found.
+    """
     if pattern is None:
-        pattern = "({0})".format(re.escape(name))
+        pattern = "({0})".format(re.escape(symbol))
     pattern = re.compile(pattern, *flags)
-    def find(text, start=0):
+    def finder_(text, start=0):
         match = pattern.search(text, start)
         if match is None:
             return None
         else:
             start, end = match.span(1)
-            return name, start, end
-    find.name = name
-    return find
+            return symbol, start, end
+    finder.__name__ = symbol
+    return finder_
 
+def sort_items(list):
+    """First-then-longest sorter
 
-def first_then_longest(item):
-    return item[1], -item[2]
+    This function sorts in-place a list of `(symbol, start, end)` items,
+    in a way that the items with the lowest `start` index appear 
+    first, and when such indices are equal, the item with the highest `end` 
+    index appears first.
+    """
+    first_then_longest = lambda item: (item[1], -item[2])
+    list.sort(key=first_then_longest)
 
+def tokenize(text):
+    """
+    Tokenizer
 
-def scan1(text):
+    Produce a sequence of `(symbol, start, end)` items where `symbol` 
+    belongs to the following list of strings:
+
+            (  )  [  ]  {  }  BLANKLINE  COMMENT  LINECONT  STRING
+
+    """
     finders  = []
     finders += [finder(symbol) for symbol in "( [ { ) ] }".split()]
     finders += [finder("BLANKLINE", r"(^[ \t\r\f\v]*\n)", re.MULTILINE)]
@@ -537,6 +592,7 @@ def scan1(text):
     finders += [finder("STRING"   , r"('''(?:[^']|\\'|'{1,2}(?!'))*''')")]
 
     start = 0
+    items = []
     while start < len(text):
         results = []
         for find in finders:
@@ -544,36 +600,49 @@ def scan1(text):
             if result is not None:
                 results.append(result)
         if results:
-            results.sort(key=first_then_longest)
+            sort_items(results)
             result = results[0]
-            yield result
+            items.append(result)
             start = result[2]
         else:
             break
+    return items
 
-def scan2(text):
+def scan(text):
+    """
+    Scan the source code `text` for atomic and scoping patterns.
+
+    Produce a a sequence of `(symbol, start, end)` items where `symbol` 
+    belongs to the following list of strings:
+
+            ()  []  {}  BLANKLINE  COMMENT  LINECONT  STRING
+
+    The items may be overlapping.
+    """
     match = {"(": ")", "[": "]", "{": "}", ")": "(", "]": "[", "}": "{"}
-    waitfor = []
+    wait_for = []
+    items = []
 
-    for name, start, end in scan1(text):
+    for symbol, start, end in tokenize(text):
         if name in ["(", "[", "{"]:
-            waitfor.append((match[name], start))
-        elif waitfor and name == waitfor[-1][0]:
-            _, start = waitfor.pop()
-            yield match[name] + name, start, end
+            wait_for.append((match[symbol], start))
+        elif wait_for and symbol == wait_for[-1][0]:
+            _, start = wait_for.pop()
+            items.append((match[symbol] + symbol, start, end))
         else:
-            yield name, start, end
+            items.append((symbol, start, end))
 
-def scan3(text):
-    output = list(scan2(text))
-    output.sort(key=first_then_longest)
-    return output
+    sort_items(items)
+    return items
 
 def skip_lines(text):
+    """
+    Lines to skip during the indentation analysis.
+    """
     lines = []
     locator = Locator(text)
-    for name, start, end in scan3(text):
-        start, end = locator.lineno(start), locator.lineno(end)
+    for name, start, end in scan(text):
+        start, end = locator(start), locator(end)
         if name == "BLANKLINE":
             lines.append(start[0])
         if name == "COMMENT":
@@ -588,11 +657,33 @@ def skip_lines(text):
             lines += [line for line in range(start_line, end_line + 1)]
     return set(lines)
 
-def get_lines(source, lineno):
-    pass
-
 def tab_match(line, tabs):
-    pattern = re.compile("^[ \t\r\f\v]+", re.MULTILINE)
+    """
+    Analyze the indentation of a line with respect to a sequence of indents.
+
+    Arguments
+    ---------
+
+      - `line`: a text string,
+
+      - `tabs`: a sequence of non-empty whitespace strings.
+
+    Returns
+    -------
+
+      - `match`: the largest starting sequence of `tabs` found at the
+        start of the line,
+
+      - `extra`: an extra whitespace element found after the full `tabs` sequence, 
+                 or otherwise `None`.
+
+    Raises
+    ------
+
+    A `ValueError` exception is raised if the `tabs` list is matched only 
+    partially but there is some extra whitespace found after it.
+    """
+    tab_search = re.compile("^[ \t\r\f\v]+", re.MULTILINE).search
     _tabs = tabs[:]
     matched = []
 
@@ -604,7 +695,7 @@ def tab_match(line, tabs):
         else:
             break
 
-    match = pattern.search(line)
+    match = tab_search(line)
     if match:
         extra = match.group(0)
     else:
@@ -615,22 +706,29 @@ def tab_match(line, tabs):
     else:
         raise ValueError("indentation error")
 
-def indents(source):
+def indents(text):
     """
-    Return a sequence of `(lineno, tabs)`
+    Return the indents of a source code.
+
+    The result is a list of `(lineno, delta)` where:
+
+      - `lineno` is a line number offset (starts with `0`),
+
+      - `delta` is the number of extra indents (it may be negative).
     """
-    skip = skip_lines(source)
+    skip = skip_lines(text)
     tabs = []
-    pattern = re.compile("^[ \t\r\f\v]+", re.MULTILINE)
-    for i, line in enumerate(source.split("\n")):
+    indents = []
+    for i, line in enumerate(text.split("\n")):
         if i not in skip:
             match, extra = tab_match(line, tabs)
             if extra:
-                yield i, +1
+                indents.append((i, +1))
                 tabs.append(extra)
             else:
-                yield i, len(match) - len(tabs)
+                indents.append((i, len(match) - len(tabs)))
                 tabs = tabs[:len(match)]
+    return indents
 
 def parse_declaration(line):
     finders  = []
@@ -643,7 +741,7 @@ def parse_declaration(line):
         if result is not None:
             results.append(result)
     if results:
-        results.sort(key=first_then_longest)
+        sort_items(results)
         result = results[0]
         result = result[0], line[result[1]:result[2]]
         return result
@@ -666,6 +764,9 @@ def parse_declaration(line):
 
 
 class Info(object):
+    """
+    Lighweight Records
+    """
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
     def __repr__(self):
@@ -691,23 +792,41 @@ class Info(object):
 #       should be stacked and added to the node info.
 #      
 
+# Rk: splitlines does not honor trailing newlines, use split("\n") instead.
+
 # TODO: check that all blanklines are here.
-def make_tree(source):
-    lines = source.split("\n")
+def make_tree(text):
+    """
+    Create a nested structure based on the indentation of source code.
+
+    Argument
+    --------
+
+      - `text`: a source code string
+
+    Returns
+    -------
+
+      - `tree = (info, children)` where: 
+          - `info` has `lineno`, `name`, `type` and `source` attributes, 
+          - `children` is a list of `tree` items.
+
+    """
+    lines = text.split("\n")
     items = [(Info(lineno=0, name=None, type=None), [])]
-    item = items[0]
+    item = items[0] # current item
     prev_lineno = 0
     def push(item):
         items.append(item)
     def fold():
         item = items.pop()
         items[-1][-1].append(item)
-    for lineno, tab in indents(source):
-        source = "\n".join(lines[prev_lineno:lineno])
-        item[0].source = source
+    for lineno, tab in indents(text):
+        text = "\n".join(lines[prev_lineno:lineno])
+        item[0].source = text
         type, name = parse_declaration(lines[lineno])
         if tab <= 0 and len(items) >= 2:
-            for _ in range(-tab+1):
+            for _ in range(-tab + 1):
                 fold()
         info = Info(lineno=lineno, name=name, type=type)
         item = (info, [])
@@ -716,13 +835,14 @@ def make_tree(source):
     else:
         lineno = len(lines)
         source = "\n".join(lines[prev_lineno:lineno]) # no trailing newline.
-        # splitlines does not honor it anyway. BITCH !. Use split("\n") instead.
         item[0].source = source
     while len(items) >= 2:
         fold()
     return items[0]
 
-# TODO: restore the BLANKLINEs ?
+
+# TODO: Sometimes there are extra BLANKLINEs, get rid of them. It maybe an
+#       issue with comments ???
 def display_tree(tree, nest=""):
     template = "{info.lineno:>5} {nest:>9} | {info.name:>15} {object_type:>12} {info.type:>12}"
     try:
@@ -740,97 +860,170 @@ def display_tree(tree, nest=""):
     for child in children:
         display_tree(child, nest=nest+"+")
 
+#
+# Documentation Formatting
 # ------------------------------------------------------------------------------
-
-def get_declarations(tree, decls=None, ns=None):
-    if decls is None:
-        decls = []
-    line, name, type, children = tree
-
-    if type != "unknown":
-        qname = (ns + "." if ns else "") + name
-        decls.append((line, qname, type))
-        if type in ("class", "module"):
-            for child in children:
-                get_declarations(child, decls, qname)
-    return decls
+#
 
 
-def _format(item, decls, name=None, level=1, module=None, comments=None):
-    if module is None and isinstance(item, types.ModuleType):
-        module = item
-    if comments is None:
-        comments = get_comments(module)
-    name, item, children = object_tree(item, name)
-    last_name = name.split(".")[-1]
+# TODO: manage the body of docgen as yet another formatter function.
 
+def docgen(module, source, debug=False):
+    module_name = module.__name__
+    tree = make_tree(source)
+    tree[0].name = module_name
+
+    objectify(tree)
+    commentify(tree)
+    decoratify(tree)
+
+    if debug:
+        display_tree(tree)
+        print 5*"\n"
+
+    level = 1
     markdown = ""
-    children = sorted(children, key=line_number_finder(item))
+
+    docstring = inspect.getdoc(module) or ""
+    doclines = docstring.split("\n")
+    if len(doclines) == 1:
+        short, long = doclines[0].strip(), ""
+    elif len(doclines) >= 2 and not doclines[1].strip():
+        short, long = doclines[0].strip(), "\n".join(doclines[2:])
+    else:
+        short, long = "\n".join(doclines)
 
 
-    docstring = inspect.getdoc(item) or ""
-    if isinstance(item, types.ModuleType):
-        lines = docstring.split("\n")
-        if lines:
-            short = lines[0] # TODO: what if there is no short desc. ?
-            long  = "\n".join(lines[1:]).strip()
-        else:
-            short = ""
-            long  = ""
+    # TODO: refactor into `format_module`.
+    markdown  = "#" + " " + tt(module_name)
+    markdown += (" -- " + short + "\n\n") if short else "\n\n"
+    markdown += long + "\n\n" if long else ""
 
-        # TODO: make the distinction in short between titles (to be merged
-        # in the title, that does not end with a "." and a short description,
-        # that should not be merged (and ends with a ".").
-        markdown = level * "#" + " " + tt(name) + " -- " + short + "\n\n"
-        markdown += long + "\n\n"
-    elif isinstance(item, (types.FunctionType, types.MethodType)):
-        markdown += level * "#" + " " + tt(signature(item))+ " [`function`]".format(signature(item))
-        markdown += "\n\n"
-        doc = Pandoc.read(docstring)
-        set_min_header_level(doc, level + 1)
-        docstring = doc.write()
-        markdown += docstring + "\n"
-    elif isinstance(item, type):
-        markdown += level * "#" + " " + tt((last_name + "({0})").format(", ".join(t.__name__ for t in item.__bases__))) + " [`type`]"
-        markdown += "\n\n"
-        markdown += docstring + "\n\n"
-    else: # "primitive" types
-        # distinguish "constants" (with syntax __stuff__ or STUFF) from
-        # variables ? Dunno ...
-        markdown += level * "#" + " " + tt(last_name) + " [`{0}`]".format(type(item).__name__) + "\n\n"
-        if isinstance(item, unicode):
-            string = item.encode("utf-8")
-        else:
-            string = str(item)
-        markdown += tt(string) + "\n\n"
-        
+    state = {"level": level, 
+             "namespace": module_name, 
+             "restore": True}
 
-    for name, item, _children in children:
-        line_number = line_number_finder(module)((name, item, _children))
-        _comments = copy.copy(comments)
-        text, last_level = format_comments(comments, up_to=line_number)
-#        print ">>> " + name + " " + 60 * ">"
-#        print line_number
-#        print _comments
-#        print text
-#        print 79 * "<"
-      
-        markdown += text
-        if last_level:
-            level = last_level
-        markdown += format(item, name, level+1, module, comments) + "\n"
+    for child in tree[1]:
+        markdown += format(child, state)
+
     return markdown
 
 
-def get_comments(source):
-    comments = []
-    pattern = "^#\s*\n(# [^\n]*\n)*#\s*\n"
-    for match in re.finditer(pattern, source, re.MULTILINE):
-        line_number = source.count("\n", 0, match.start())
-        comment = match.group(0)
-        comment = "\n".join(line[2:] for line in comment.split("\n")[1:])
-        comments.append((line_number, comment))
-    return comments
+def load_object(qualified_name):
+    """
+    Load an object by qualified (dotted) name.
+    """
+    parts = qualified_name.split(".")
+    object = None
+    base = ""
+    while parts:
+        part = parts.pop(0)
+        base = (base + "." if base else "") + part
+        try: 
+            object = importlib.import_module(base)
+        except ImportError:
+            parts.insert(0, part)
+            break
+    if object is None:
+       raise ValueError()
+    for part in parts:
+       try:
+           object = getattr(object, part)
+       except AttributeError:
+           raise ValueError()
+    return object
+
+def objectify(tree, ns=None):
+    """
+    Annotate a tree with objects instances.
+
+    Add `object` fields to the tree `info` structures when it makes sense.
+    """
+    name = tree[0].name
+    if name:
+        qname = (ns + "." if ns else "") + name
+        try:
+            tree[0].object = load_object(qname)
+        except ValueError:
+            pass
+        for child in tree[1]:
+            objectify(child, ns=qname)
+
+
+
+class Markdown(object):
+    def __init__(self, markdown):
+        self.markdown = markdown
+    def __str__(self):
+        return self.markdown
+    @staticmethod
+    def from_comment(comment):
+        lines = comment.split("\n")
+        lines = [line[2:] for line in lines[1:-1]]
+        return Markdown("\n".join(lines) + "\n")
+
+def commentify(tree):
+    source = getattr(tree[0], "source", None)
+    object = getattr(tree[0], "object", None)
+    if source is not None and (object is None or not isinstance(object, Markdown)):
+        # Oh, c'mon, use the tokenizer ffs !
+        pattern = r"^#\s*\n(?:#(?: [^\n]*|[ \t\r\f\v]*)\n)*#\s*(\n|$)"
+        matches = list(re.finditer(pattern, source, re.MULTILINE))
+        for i, match in enumerate(matches):
+            start = match.start()
+            end = match.end()
+            if i == 0:
+                tree[0].source = source[:start]
+            if i+1 < len(matches):
+                next = matches[i+1].start()
+            else:
+                next = len(source)
+            comment = Markdown.from_comment(source[start:end])
+            line_start = source.count("\n", 0, start)
+            info = Info(name=None, lineno=tree[0].lineno + line_start, 
+                        object=comment, type=None)
+            info.source = source[start:next]
+            tree[1].insert(i, (info, []))
+
+    for child in tree[1]:
+        commentify(child)
+
+# TODO: decoratorify, then implement the corresponding formatter ? Oops,
+#       slightly more complex as u have to modify a function formatter.
+#       Use the state ...
+
+class Decorator(object):
+    def __init__(self, decorator):
+        self.decorator = decorator
+    def __str__(self):
+        return self.decorator
+
+# TODO: avoid the regexp in COMMENT or STRING content (re-scan the content,
+#       based on finders instead of the raw regexp)
+def decoratify(tree):
+    source = getattr(tree[0], "source", None)
+    object = getattr(tree[0], "object", None)
+    if source is not None and (object is None or not isinstance(object, Decorator)):
+        pattern = r"^\s*@.+(\n|$)"
+        matches = list(re.finditer(pattern, source, re.MULTILINE))
+        for i, match in enumerate(matches):
+            start = match.start()
+            end = match.end()
+            if i == 0:
+                tree[0].source = source[:start]
+            if i+1 < len(matches):
+                next = matches[i+1].start()
+            else:
+                next = len(source)
+            decorator = Decorator(source[start:end].strip())
+            line_start = source.count("\n", 0, start)
+            info = Info(name=None, lineno=tree[0].lineno + line_start, 
+                        object=decorator, type=None)
+            info.source = source[start:next]
+            tree[1].insert(i, (info, []))
+
+    for child in tree[1]:
+        decoratify(child)
 
 _formatters = []
 
@@ -859,8 +1052,10 @@ def formatter(*types):
 WrapperDescriptorType = type(str.__dict__['__add__'])
 MethodDescriptorType = type(str.center)
 
-FunctionTypes = [types.FunctionType, types.MethodType, 
-                 types.BuiltinFunctionType, WrapperDescriptorType,
+FunctionTypes = [types.FunctionType, 
+                 types.MethodType, 
+                 types.BuiltinFunctionType, 
+                 WrapperDescriptorType,
                  MethodDescriptorType]
 
 @formatter(*FunctionTypes)
@@ -868,26 +1063,47 @@ def format_function(tree, state):
     object = tree[0].object
     markdown  = state["level"] * "#" + " "
 
-    # syntax-based signature (instead of introspection-based)
+    # TODO: syntax-based signature (instead of introspection-based)
     # Quick and dirty. Need something more robust that will used multiline,
     # get rid of the ":", of potential comments, etc.
-    pattern = r"\s*(?:c|cp)?def\s+(.+)$"
-    pattern = re.compile(pattern, re.MULTILINE)
 
-    signature = pattern.match(tree[0].source).group(1).strip()[:-1]
+    source = tree[0].source
+    # TODO: handle assignment.
+    assignment = re.compile(r"\s*([_a-zA-Z])+\s*=")
+    if assignment.match(source):
+        markdown += tt(source.split("\n")[0].strip()) + " [`function`]\n"
+    else:
+        def_ = re.compile(r"\s*(?:c|cp)?def\s+(.+)$", re.MULTILINE)
+        match = def_.match(source)
+        if not match:
+           error = "can't analyze function definition {0!r}"
+           raise SyntaxError(error.format(source))
 
-    #print "signature:", signature
- 
-    markdown += tt(signature)
+        signature = match.group(1).strip()[:-1]
 
-    markdown += " [`function`]\n"
-    markdown += "\n"
-    docstring = inspect.getdoc(object) or ""
-    if docstring:
-        doc = Pandoc.read(docstring)
-        set_min_header_level(doc, state["level"] + 1)
-        docstring = doc.write()
-        markdown += docstring + "\n"
+        markdown += tt(signature)
+
+        markdown += " [`function`]\n"
+        markdown += "\n"
+
+        decorators = state.get("decorator", [])
+        if len(decorators) == 1:
+            markdown += "decorated by: "
+            markdown += tt(decorators[0]) + ".\n\n"
+        elif len(decorators) >= 2:
+            markdown += "decorated by:\n\n"
+            for decorator in decorators:
+                markdown += "  - " + tt(decorator) + "\n"
+            markdown += "\n"
+
+        docstring = inspect.getdoc(object) or ""
+        if docstring:
+            doc = Pandoc.read(docstring)
+            set_min_header_level(doc, state["level"] + 1)
+            docstring = doc.write()
+            markdown += docstring + "\n\n"
+
+    state["decorator"] = []
     level = state["level"]
     state["level"] = level + 1
     for child in tree[1]:
@@ -922,55 +1138,7 @@ def format_type(tree, state):
         state["level"] = level
     return markdown
 
-# This is ugly. Create an object loader ? with a LoadError ?
-class Objects(object):
-    def __getitem__(self, qname):
-        parts = qname.split(".")
-        object = None
-        base = ""
-        while parts:
-            part = parts.pop(0)
-            base = (base + "." if base else "") + part
-            try: 
-                object = importlib.import_module(base)
-            except ImportError:
-                parts.insert(0, part)
-                break
-        if object is None:
-           raise KeyError
-        for part in parts:
-           try:
-               object = getattr(object, part)
-           except AttributeError:
-               raise KeyError
-        return object
 
-objects = Objects()
-
-def objectify(tree, ns=""):
-    name = tree[0].name
-    if name:
-        qname = (ns + "." if ns else "") + name
-        # print "qname", qname
-        try:
-            tree[0].object = objects[qname]
-        except KeyError:
-            pass
-        for child in tree[1]:
-            objectify(child, ns=qname)
-
-class Markdown(object):
-    def __init__(self, markdown):
-        self.markdown = markdown
-    def __str__(self):
-        return self.markdown
-    @staticmethod
-    def from_comment(comment):
-        #print "***", repr(comment)
-        # TODO: include the syntax check ?
-        lines = comment.split("\n")
-        lines = [line[2:] for line in lines[1:-1]]
-        return Markdown("\n".join(lines) + "\n")
 
 @formatter(Markdown)
 def format_markdown(tree, state):
@@ -994,6 +1162,14 @@ def format_markdown(tree, state):
     #      feat. ? Study how this option would interact with comments (not very
     #      well AFAICT).
     return markdown
+
+@formatter(Decorator)
+def format_decorator(tree, state):
+    # TODO: put some info in the state for the next function.
+    if not state.get("decorator", None):
+        state["decorator"] = []
+    state["decorator"].append(tree[0].object.decorator)
+    return ""
 
 @formatter(object)
 def format_object(tree, state):
@@ -1026,251 +1202,112 @@ def format_default(tree, state):
         state["level"] = level
     return markdown
 
-def depth(tree):
-    if not tree[1]:
-       return 1
-    else:
-       return 1 + max(depth(child) for child in tree[1])
-
-# We can't do it like that ... the comment would have to be added AFTER the
-# component not under it ... and then the issue is that the comment is nested
-# with the same level as the component and the display loop may not go deep
-# enough to handle it. Arf, this is the issue with the "intertwined" model ...
 
 
-# BUG: the match of the comment (or the restructuration ?) may omit characters.
-#      That's probably because if the special comments ENDS the source, there is
-#      no trailing newline.
-def commentify(tree):
-    source = getattr(tree[0], "source", None)
-    object = getattr(tree[0], "object", None)
-    if source is not None and (object is None or not isinstance(object, Markdown)):
-        pattern = r"^#\s*\n(?:#(?: [^\n]*|[ \t\r\f\v]*)\n)*#\s*(\n|$)"
-        matches = list(re.finditer(pattern, source, re.MULTILINE))
-        for i, match in enumerate(matches):
-            start = match.start()
-            end = match.end()
-            if i == 0:
-                tree[0].source = source[:start]
-            if i+1 < len(matches):
-                next = matches[i+1].start()
-            else:
-                next = len(source)
-            comment = Markdown.from_comment(source[start:end])
-            line_start = source.count("\n", 0, start)
-            info = Info(name=None, lineno=tree[0].lineno + line_start, object=comment, type=None)
-            info.source = source[start:next]#"\n".join(source.split("\n")[start:next])
-            tree[1].insert(i, (info, []))
 
-    for child in tree[1]:
-        commentify(child)
-
-
-#if __name__ == "__main__":
-#    source = open(sys.argv[1]).read()
-#    tree = make_tree(source)
-#    objectify(tree)
-#    commentify(tree)
-
-
-class Undefined(object):
-    def __repr__(self):
-        return "undefined"
-    __str__ = __repr__
-
-undefined = Undefined()
-
-def docgen(module, source, debug=False):
-    module_name = module.__name__
-    tree = make_tree(source)
-    tree[0].name = module_name
-    objectify(tree)
-
-    #print depth(tree)    
-
-    commentify(tree)
-
-    if debug:
-        display_tree(tree)
-        print 5*"\n"
-
-    level = 1
-    markdown = ""
-
-    docstring = inspect.getdoc(module) or ""
-    doclines = docstring.split("\n")
-    if len(doclines) == 1:
-        short, long = doclines[0].strip(), ""
-    elif len(doclines) >= 2 and not doclines[1].strip():
-        short, long = doclines[0].strip(), "\n".join(doclines[2:])
-    else:
-        short, long = "\n".join(doclines)
-
-    # comments = get_comments(source)
-
-    # Rk: we could make the distinction in short between titles (to be merged
-    # in the title, that does not end with a "." and a short description,
-    # that should not be merged (and ends with a ".").
-
-    # TODO: refactor into `format_module`.
-    markdown  = "#" + " " + tt(module_name)
-    markdown += (" -- " + short + "\n\n") if short else "\n\n"
-    markdown += long + "\n\n" if long else ""
-
-    state = {"level": level, 
-             "namespace": module_name, 
-             "restore": True}
-
-    for child in tree[1]:
-        markdown += format(child, state)
-
-    return markdown
-
-## Arguments: module name, optionally corresponding file.
-#def _main(filename):# temp, testing purpose.
-#    src = open(filename).read()
-#    lines = src.split("\n")
-#    module_name = os.path.basename(filename).split(".")[0]
-#    t = scope_tree(src, module_name)
-#    decls = get_declarations(t)
-#    for line, name, type in decls:
-#        print "{0:>5} | {1:>30}, {2}".format(line, name, type)
-#    print
-
-
-#def tree(source, indent=None):
-#    if isinstance(source, basestring):
-#        source = source.split("\n")
-#    if indent is None:
-#        indent = []
-#    root = []
-#    def indents(line):
-#        if is_blank(line):
-#            return 0
-#        if not line.startswith(indent):
-#            return -1
-#        if line.startswith(indent) and line[len(indent):].startswith(" "):
-#            return +1
-#        else:
-#            return 0
-#    while source:
-#        line = source.pop(0)
-#        d = delta(line)
-#        print d, line
-#        if d == 0:
-#            root.append(line)
-#        elif d < 0:
-#            return root
-#        else:
-#            _indent = re.match("\s*", line).group(0)
-#            sub = [line, tree(source, indent=_indent)]
-#            root.append(sub)
-#    return root
-    
-
-def get_decl(line):
-    """
-    Return `(name, type)`
-    """
-    function = r"(?:c?p?def)\s+(?P<name>[_0-9a-zA-Z]+)\("
-    type = r"(class)\s+(?P<name>[_0-9a-zA-Z]+)("
-    assign = r"(?P<name>[_0-9a-zA-Z]+)\s*\+?="
+#def get_decl(line):
+#    """
+#    Return `(name, type)`
+#    """
+#    function = r"(?:c?p?def)\s+(?P<name>[_0-9a-zA-Z]+)\("
+#    type = r"(class)\s+(?P<name>[_0-9a-zA-Z]+)("
+#    assign = r"(?P<name>[_0-9a-zA-Z]+)\s*\+?="
 
 #
 # ------------------------------------------------------------------------------
 #
 
-# BUG: any item with `inf` as a line_number (meaning unknown line number,
-#      flush to the end will flush out ALL of the source comments, including
-#      those out of the class declaration for example. 
-#      If we could reduce the unknown decl line numbers to 0 that would be 
-#      extra nice ... Do our best and otherwise EXCLUDE the objects whose
-#      line number is unknown ?
-#      Base the improvement on source analysis (with re), something that could
-#      be working on cython too ?
-def format_comments(comments, up_to=INF):
-    markdown = ""
-    level = None
-    while True:
-        try:
-            line_number, comment = comments.pop(0)
-            if line_number > up_to:
-                comments.insert(0, (line_number, comment))
-                break
-            else:
-                markdown += comment
-        except IndexError:
-            break
-    if markdown:
-        return markdown, last_header_level(markdown)
-    else:
-        return "", None
-     
+## BUG: any item with `inf` as a line_number (meaning unknown line number,
+##      flush to the end will flush out ALL of the source comments, including
+##      those out of the class declaration for example. 
+##      If we could reduce the unknown decl line numbers to 0 that would be 
+##      extra nice ... Do our best and otherwise EXCLUDE the objects whose
+##      line number is unknown ?
+##      Base the improvement on source analysis (with re), something that could
+##      be working on cython too ?
+#def format_comments(comments, up_to=INF):
+#    markdown = ""
+#    level = None
+#    while True:
+#        try:
+#            line_number, comment = comments.pop(0)
+#            if line_number > up_to:
+#                comments.insert(0, (line_number, comment))
+#                break
+#            else:
+#                markdown += comment
+#        except IndexError:
+#            break
+#    if markdown:
+#        return markdown, last_header_level(markdown)
+#    else:
+#        return "", None
+#     
 
-def _format(item, name=None, level=1, module=None, comments=None):
-    if module is None and isinstance(item, types.ModuleType):
-        module = item
-    if comments is None:
-        comments = get_comments(module)
-    name, item, children = object_tree(item, name)
-    last_name = name.split(".")[-1]
+#def _format(item, name=None, level=1, module=None, comments=None):
+#    if module is None and isinstance(item, types.ModuleType):
+#        module = item
+#    if comments is None:
+#        comments = get_comments(module)
+#    name, item, children = object_tree(item, name)
+#    last_name = name.split(".")[-1]
 
-    markdown = ""
-    children = sorted(children, key=line_number_finder(item))
+#    markdown = ""
+#    children = sorted(children, key=line_number_finder(item))
 
 
-    docstring = inspect.getdoc(item) or ""
-    if isinstance(item, types.ModuleType):
-        lines = docstring.split("\n")
-        if lines:
-            short = lines[0] # TODO: what if there is no short desc. ?
-            long  = "\n".join(lines[1:]).strip()
-        else:
-            short = ""
-            long  = ""
+#    docstring = inspect.getdoc(item) or ""
+#    if isinstance(item, types.ModuleType):
+#        lines = docstring.split("\n")
+#        if lines:
+#            short = lines[0] # TODO: what if there is no short desc. ?
+#            long  = "\n".join(lines[1:]).strip()
+#        else:
+#            short = ""
+#            long  = ""
 
-        # TODO: make the distinction in short between titles (to be merged
-        # in the title, that does not end with a "." and a short description,
-        # that should not be merged (and ends with a ".").
-        markdown = level * "#" + " " + tt(name) + " -- " + short + "\n\n"
-        markdown += long + "\n\n"
-    elif isinstance(item, (types.FunctionType, types.MethodType)):
-        markdown += level * "#" + " " + tt(signature(item))+ " [`function`]".format(signature(item))
-        markdown += "\n\n"
-        doc = Pandoc.read(docstring)
-        set_min_header_level(doc, level + 1)
-        docstring = doc.write()
-        markdown += docstring + "\n"
-    elif isinstance(item, type):
-        markdown += level * "#" + " " + tt((last_name + "({0})").format(", ".join(t.__name__ for t in item.__bases__))) + " [`type`]"
-        markdown += "\n\n"
-        markdown += docstring + "\n\n"
-    else: # "primitive" types
-        # distinguish "constants" (with syntax __stuff__ or STUFF) from
-        # variables ? Dunno ...
-        markdown += level * "#" + " " + tt(last_name) + " [`{0}`]".format(type(item).__name__) + "\n\n"
-        if isinstance(item, unicode):
-            string = item.encode("utf-8")
-        else:
-            string = str(item)
-        markdown += tt(string) + "\n\n"
-        
+#        # TODO: make the distinction in short between titles (to be merged
+#        # in the title, that does not end with a "." and a short description,
+#        # that should not be merged (and ends with a ".").
+#        markdown = level * "#" + " " + tt(name) + " -- " + short + "\n\n"
+#        markdown += long + "\n\n"
+#    elif isinstance(item, (types.FunctionType, types.MethodType)):
+#        markdown += level * "#" + " " + tt(signature(item))+ " [`function`]".format(signature(item))
+#        markdown += "\n\n"
+#        doc = Pandoc.read(docstring)
+#        set_min_header_level(doc, level + 1)
+#        docstring = doc.write()
+#        markdown += docstring + "\n"
+#    elif isinstance(item, type):
+#        markdown += level * "#" + " " + tt((last_name + "({0})").format(", ".join(t.__name__ for t in item.__bases__))) + " [`type`]"
+#        markdown += "\n\n"
+#        markdown += docstring + "\n\n"
+#    else: # "primitive" types
+#        # distinguish "constants" (with syntax __stuff__ or STUFF) from
+#        # variables ? Dunno ...
+#        markdown += level * "#" + " " + tt(last_name) + " [`{0}`]".format(type(item).__name__) + "\n\n"
+#        if isinstance(item, unicode):
+#            string = item.encode("utf-8")
+#        else:
+#            string = str(item)
+#        markdown += tt(string) + "\n\n"
+#        
 
-    for name, item, _children in children:
-        line_number = line_number_finder(module)((name, item, _children))
-        _comments = copy.copy(comments)
-        text, last_level = format_comments(comments, up_to=line_number)
-#        print ">>> " + name + " " + 60 * ">"
-#        print line_number
-#        print _comments
-#        print text
-#        print 79 * "<"
-      
-        markdown += text
-        if last_level:
-            level = last_level
-        markdown += format(item, name, level+1, module, comments) + "\n"
-    return markdown
+#    for name, item, _children in children:
+#        line_number = line_number_finder(module)((name, item, _children))
+#        _comments = copy.copy(comments)
+#        text, last_level = format_comments(comments, up_to=line_number)
+##        print ">>> " + name + " " + 60 * ">"
+##        print line_number
+##        print _comments
+##        print text
+##        print 79 * "<"
+#      
+#        markdown += text
+#        if last_level:
+#            level = last_level
+#        markdown += format(item, name, level+1, module, comments) + "\n"
+#    return markdown
 
 def help():
     """
@@ -1318,7 +1355,7 @@ def main(args=None):
         if ext == "tex":
             sh.pandoc(read="markdown", toc=True, standalone=True, write="latex", o=output, _in=markdown)
         elif ext == "pdf":
-            try:
+            try: # keep that somewhere, but use pandoc to generate the pdf ?
                 latex = ".".join(basename.split(".")[:-1]) + ".tex"
                 build = tempfile.mkdtemp()
                 cwd = os.getcwd()
