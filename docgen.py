@@ -41,7 +41,7 @@ import sh
 
 __author__ = u"Sébastien Boisgérault <Sebastien.Boisgerault@mines-paristech.fr>"
 __license__ = "MIT License"
-__version__ = None
+__version__ = "0.0.0a1"
 
 #
 # TODOs
@@ -1027,6 +1027,8 @@ def decoratify(tree):
 
 _formatters = []
 
+def is_public(name):
+   return not name.startswith("_") or (name.startswith("__") and name.endswith("__"))
 
 def format(tree, state):
     _match = False
@@ -1060,56 +1062,62 @@ FunctionTypes = [types.FunctionType,
 
 @formatter(*FunctionTypes)
 def format_function(tree, state):
-    object = tree[0].object
-    markdown  = state["level"] * "#" + " "
 
-    # TODO: syntax-based signature (instead of introspection-based)
-    # Quick and dirty. Need something more robust that will used multiline,
-    # get rid of the ":", of potential comments, etc.
+    markdown = ""
+    if is_public(tree[0].name):
+        object = tree[0].object
+        markdown  = state["level"] * "#" + " "
 
-    source = tree[0].source
-    # TODO: handle assignment.
-    assignment = re.compile(r"\s*([_a-zA-Z])+\s*=")
-    if assignment.match(source):
-        markdown += tt(source.split("\n")[0].strip()) + " [`function`]\n"
-    else:
-        def_ = re.compile(r"\s*(?:c|cp)?def\s+(.+)$", re.MULTILINE)
-        match = def_.match(source)
-        if not match:
-           error = "can't analyze function definition {0!r}"
-           raise SyntaxError(error.format(source))
+        # TODO: syntax-based signature (instead of introspection-based)
+        # Quick and dirty. Need something more robust that will used multiline,
+        # get rid of the ":", of potential comments, etc.
 
-        signature = match.group(1).strip()[:-1]
+        source = tree[0].source
+        # TODO: handle assignment.
+        assignment = re.compile(r"\s*([_a-zA-Z])+\s*=")
+        if assignment.match(source):
+            markdown += tt(source.split("\n")[0].strip()) + " [`function`]\n"
+        else:
+            def_ = re.compile(r"\s*(?:c|cp)?def\s+(.+)$", re.MULTILINE)
+            match = def_.match(source)
+            if not match:
+               error = "can't analyze function definition {0!r}"
+               raise SyntaxError(error.format(source))
 
-        markdown += tt(signature)
+            signature = match.group(1).strip()[:-1]
 
-        markdown += " [`function`]\n"
-        markdown += "\n"
+            markdown += tt(signature)
 
-        decorators = state.get("decorator", [])
-        if len(decorators) == 1:
-            markdown += "decorated by: "
-            markdown += tt(decorators[0]) + ".\n\n"
-        elif len(decorators) >= 2:
-            markdown += "decorated by:\n\n"
-            for decorator in decorators:
-                markdown += "  - " + tt(decorator) + "\n"
+            markdown += " [`function`]\n"
             markdown += "\n"
 
-        docstring = inspect.getdoc(object) or ""
-        if docstring:
-            doc = Pandoc.read(docstring)
-            set_min_header_level(doc, state["level"] + 1)
-            docstring = doc.write()
-            markdown += docstring + "\n\n"
+            decorators = state.get("decorator", [])
+            if len(decorators) == 1:
+                markdown += "decorated by: "
+                markdown += tt(decorators[0]) + ".\n\n"
+            elif len(decorators) >= 2:
+                markdown += "decorated by:\n\n"
+                for decorator in decorators:
+                    markdown += "  - " + tt(decorator) + "\n"
+                markdown += "\n"
+
+            docstring = inspect.getdoc(object) or ""
+            if docstring:
+                doc = Pandoc.read(docstring)
+                set_min_header_level(doc, state["level"] + 1)
+                docstring = doc.write()
+                markdown += docstring + "\n\n"
 
     state["decorator"] = []
-    level = state["level"]
-    state["level"] = level + 1
-    for child in tree[1]:
-        markdown += format(child, state)
-    if state["restore"]:
-        state["level"] = level
+
+    if is_public(tree[0].name):
+        level = state["level"]
+        state["level"] = level + 1
+        for child in tree[1]:
+            markdown += format(child, state)
+        if state["restore"]:
+            state["level"] = level
+
     return markdown
 
 # TODO: recursivity. Beware: the comments should be 
@@ -1117,25 +1125,27 @@ def format_function(tree, state):
 # the comment management code. Can we do better ?
 @formatter(type)
 def format_type(tree, state):
-    object = tree[0].object
-    name = tree[0].name
-    level = state["level"]
-    markdown  = level * "#" + " "
-    bases_names = [type.__name__ for type in object.__bases__] 
-    markdown += tt((name + "({0})").format(", ".join(bases_names))) 
-    markdown += " [`type`]\n"
-    markdown += "\n"
-    docstring = inspect.getdoc(object) or ""
-    if docstring:
-        doc = Pandoc.read(docstring)
-        set_min_header_level(doc, level + 1)
-        docstring = doc.write()
-        markdown += docstring + "\n"
-    state["level"] = level + 1
-    for child in tree[1]:
-        markdown += format(child, state)
-    if state["restore"]:
-        state["level"] = level
+    markdown = ""
+    if is_public(tree[0].name):
+        object = tree[0].object
+        name = tree[0].name
+        level = state["level"]
+        markdown  = level * "#" + " "
+        bases_names = [type.__name__ for type in object.__bases__] 
+        markdown += tt((name + "({0})").format(", ".join(bases_names))) 
+        markdown += " [`type`]\n"
+        markdown += "\n"
+        docstring = inspect.getdoc(object) or ""
+        if docstring:
+            doc = Pandoc.read(docstring)
+            set_min_header_level(doc, level + 1)
+            docstring = doc.write()
+            markdown += docstring + "\n"
+        state["level"] = level + 1
+        for child in tree[1]:
+            markdown += format(child, state)
+        if state["restore"]:
+            state["level"] = level
     return markdown
 
 
@@ -1173,22 +1183,24 @@ def format_decorator(tree, state):
 
 @formatter(object)
 def format_object(tree, state):
-    object = tree[0].object
-    name = tree[0].name
-    markdown  = state["level"] * "#" + " " + tt(name) 
-    markdown += " [`{0}`] \n".format(type(object).__name__)
-    markdown += "\n"
-    if isinstance(object, unicode):
-        string = object.encode("utf-8")
-    else:
-        string = str(object)
-    markdown += tt(string) + "\n\n"
-    level = state["level"]
-    state["level"] = level + 1
-    for child in tree[1]:
-        markdown += format(child, state)
-    if state["restore"]:
-        state["level"] = level
+    markdown = ""
+    if is_public(tree[0].name):
+        object = tree[0].object
+        name = tree[0].name
+        markdown  = state["level"] * "#" + " " + tt(name) 
+        markdown += " [`{0}`] \n".format(type(object).__name__)
+        markdown += "\n"
+        if isinstance(object, unicode):
+            string = object.encode("utf-8")
+        else:
+            string = str(object)
+        markdown += tt(string) + "\n\n"
+        level = state["level"]
+        state["level"] = level + 1
+        for child in tree[1]:
+            markdown += format(child, state)
+        if state["restore"]:
+            state["level"] = level
     return markdown
 
 @formatter()
