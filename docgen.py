@@ -1194,6 +1194,9 @@ def format_object(tree, state):
             string = object.encode("utf-8")
         else:
             string = str(object)
+        if len(string) >= 800:
+            string = string[:400] + " ... " + string[-400:]
+
         markdown += tt(string) + "\n\n"
         level = state["level"]
         state["level"] = level + 1
