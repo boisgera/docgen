@@ -881,7 +881,7 @@ def docgen(module, source, debug=False):
         display_tree(tree)
         print 5*"\n"
 
-    level = 1
+
     markdown = ""
 
     docstring = inspect.getdoc(module) or ""
@@ -898,6 +898,8 @@ def docgen(module, source, debug=False):
     markdown  = "#" + " " + tt(module_name)
     markdown += (" -- " + short + "\n\n") if short else "\n\n"
     markdown += long + "\n\n" if long else ""
+
+    level = 2
 
     state = {"level": level, 
              "namespace": module_name, 
