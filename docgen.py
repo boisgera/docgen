@@ -79,6 +79,11 @@ __version__ = "0.0.0a1"
 # Pandoc Document Model
 # ------------------------------------------------------------------------------
 #
+
+# Rk: need to stick with pandoc 1.9 for now, the later versions have been
+#     messing seriously with the JSON representation (and it's still not
+#     stable or works as advertised AFAICT).
+
 def _tree_iter(item):
     "Tree iterator"
     yield item
@@ -141,6 +146,9 @@ class DefinitionList(Block):
     pass
 
 class BulletList(Block):
+    pass
+
+class OrderedList(Block):
     pass
 
 class Plain(Block):
