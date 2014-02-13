@@ -74,6 +74,10 @@ __version__ = "0.0.0a1"
 #     where the short doc is a title, not such much for functions for which the
 #     one-liner is a sentence (action performed by the function).
 #
+#   - Test specifically for pandoc 1.9 (or <= ?) ? Pinpoint the last version
+#     with the "classic" JSON model that is compatible with my implementation.
+#     Study the (apparently unstable and whose doc does not macth the reality
+#     of the JSON document model)
 
 #
 # Pandoc Document Model
@@ -143,6 +147,9 @@ class DefinitionList(Block):
 class BulletList(Block):
     pass
 
+class OrderedList(Block):
+    pass
+
 class Plain(Block):
     pass
 
@@ -193,6 +200,21 @@ class Strong(Inline):
 class Math(Inline):
     pass
 
+
+# TODO: check Pandoc version: in 1.12(.1 ?), change in the json output 
+#       structure ... Need to handle both kind of outputs ... selection
+#       of the format as a new argument to __json__ ? The Text.Pandoc.Definition
+#       has been moved to pandoc-types <http://hackage.haskell.org/package/pandoc-types>.
+#       Detect the format used by the conversion of a simple document ? Fuck, 
+#       In need to be able to access an "old" version of pandoc (the one packaged
+#       for ubuntu 12.04 ?). Ah, fuck, all this is a moving target. In 12.1,
+#       that's "tag" and "contents", but changelog of 12.1 stated that it is
+#       "t" and "c" ... I don't even know what version I am really using.
+#       What is supposed to be stable ? There is probably 3 target: the packaged
+#       ubuntu 12.04, the 1.12 installed as latest by cabal ... and the current
+#       git version ... 1.12.3 ouch. What's in Ubuntu 13.04 ? 13.10 ? The 1.11.1
+#       Errr ... Try to build from git the git version and see if there is
+#       really a change in the JSON format ?
 def to_pandoc(json):
     def is_doc(item):
         return isinstance(item, list) and \
@@ -222,8 +244,13 @@ def read(text):
     """
     Read a markdown text as a Pandoc instance.
     """
+    #print "***text:", text
     json_text = str(sh.pandoc(read="markdown", write="json", _in=text))
     json_ = json.loads(json_text)
+    #import pprint
+    #pp = pprint.PrettyPrinter(indent=2).pprint
+    #print "***json:"
+    #pp(json_)
     return to_pandoc(json_)
 
 def write(doc):
@@ -488,6 +515,10 @@ def last_header_level(markdown):
 #     whitespace = "\s*"
 #     return re.match(whitespace, line).group(0) == line
 
+
+# TODO: single function call, convert one way or another based on the
+#       number of arguments ? And therefore, turn the Locator into a 
+#       closure ...
 class Locator(object):
     """Convert locations in text.
 
@@ -557,9 +588,13 @@ def finder(symbol, pattern=None, *flags):
         else:
             start, end = match.span(1)
             return symbol, start, end
-    finder.__name__ = symbol
+    finder_.__name__ = symbol
     return finder_
 
+# We don't need a First then Longest then "First in pattern list" sorter ?
+# This is what is done implicitly ? Can we trust list.sort to return the
+# first item in the list among those that are equally sorted ? Yes, this
+# is a stable sort ...
 def sort_items(list):
     """First-then-longest sorter
 
@@ -608,6 +643,9 @@ def tokenize(text):
             break
     return items
 
+# Rk: now the "largest" objects (enclosing braces) are returned AFTER the
+#     enclosed objects. Maybe we don't care ? But it's contrary to the
+#     classic linearization of the hierarchy.
 def scan(text):
     """
     Scan the source code `text` for atomic and scoping patterns.
@@ -755,7 +793,7 @@ def parse_declaration(line):
 #       -- beyond syntax analysis -- introspection-based information can be
 #       added to the info object, such as the object itself, the docstring,
 #       etc. The special markdown comments should also be intertwined.
-#       In info, use None (for lineno, name, type when it is required.)
+#       In info, use None (for lineno, name, type) when it is required.
 #       
 # Q: how should line continuations be handled ? In a first approach,
 #    we don't do anything but later, maybe the lineno should be 
